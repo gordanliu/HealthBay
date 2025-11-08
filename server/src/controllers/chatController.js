@@ -439,6 +439,13 @@ User's Context:
 
 User's message: "${userMessage}"
 
+CRITICAL TREATMENT GUIDELINES:
+- ONLY recommend treatments that can be done by the patient themselves at home
+- Self-care treatments include: RICE protocol, over-the-counter pain medication, stretching, strengthening exercises, ice/heat therapy, compression, elevation, rest, bracing/taping
+- For treatments requiring medical professionals (injections, surgery, prescription medications, imaging, manual therapy by professionals), clearly state "Consult a doctor for professional medical treatment"
+- Never recommend specific prescription medications, injections, or surgical procedures as self-care
+- Always emphasize when professional medical evaluation is needed
+
 Provide comprehensive information about this diagnosis. Return ONLY a JSON object:
 
 {
@@ -452,22 +459,23 @@ Provide comprehensive information about this diagnosis. Return ONLY a JSON objec
     "chronic": "Weeks 3+: Description of return to activity"
   },
   "treatmentPlan": {
-    "immediate": ["List of immediate actions - RICE protocol"],
-    "ongoing": ["List of ongoing treatments and exercises"],
-    "rehabilitation": ["List of rehab exercises and progressions"]
+    "immediate": ["ONLY self-care actions like RICE protocol, OTC pain relief"],
+    "ongoing": ["ONLY at-home treatments: exercises, stretches, ice/heat, compression"],
+    "rehabilitation": ["ONLY self-guided exercises and progressions"],
+    "requiresProfessional": ["List treatments requiring doctor: injections, imaging, prescription meds, surgery, physical therapy"]
   },
   "diagnosticTests": [
     {
       "name": "Test name (e.g., 'Anterior Drawer Test')",
-      "description": "How to perform this test",
+      "description": "How to perform this test at home",
       "positiveIndicator": "What indicates a positive test"
     }
   ],
   "redFlags": ["List of symptoms requiring immediate medical attention"],
   "whenToSeeDoctorImmediate": ["Situations requiring immediate medical care"],
   "whenToSeeDoctor24_48hrs": ["Situations to see doctor within 24-48 hours"],
-  "selfCareAppropriate": "When self-care is appropriate",
-  "estimatedRecoveryTime": "e.g., '4-6 weeks for moderate cases'",
+  "selfCareAppropriate": "When self-care is appropriate vs when to see a doctor",
+  "estimatedRecoveryTime": "e.g., '4-6 weeks for moderate cases with proper self-care'",
   "returnToActivityGuidelines": "Guidelines for when to return to sports/activities"
 }`;
 
@@ -811,6 +819,13 @@ User Context:
 Test Results:
 ${resultsString}
 
+CRITICAL TREATMENT GUIDELINES:
+- ONLY recommend treatments that can be done by the patient themselves at home
+- Self-care treatments include: RICE protocol, over-the-counter pain medication, stretching, strengthening exercises, ice/heat therapy, compression, elevation, rest, bracing/taping
+- For treatments requiring medical professionals (injections, surgery, prescription medications, imaging, manual therapy by professionals), clearly state: "For [treatment name], consult a doctor for professional medical treatment"
+- Never recommend specific prescription medications, injections, or surgical procedures as self-care
+- Always emphasize when professional medical evaluation is needed based on test results
+
 Based on these test results, provide a comprehensive refined assessment. Return ONLY a JSON object:
 {
   "confidenceLevel": "high|medium|low",
@@ -828,14 +843,15 @@ Based on these test results, provide a comprehensive refined assessment. Return 
     "Modified recommendation due to test findings"
   ],
   "refinedTreatmentPlan": {
-    "immediate": ["Immediate actions based on test results"],
-    "week1": ["Week 1 treatments adjusted for severity"],
-    "week2_3": ["Week 2-3 treatments"],
-    "ongoing": ["Long-term rehabilitation"]
+    "immediate": ["ONLY self-care: RICE protocol, OTC pain relief based on test results"],
+    "week1": ["ONLY at-home treatments: exercises, ice/heat, compression adjusted for severity"],
+    "week2_3": ["ONLY self-guided exercises and progressions"],
+    "ongoing": ["ONLY at-home long-term rehabilitation"],
+    "requiresProfessional": ["If test results indicate need for: injections, imaging, prescription meds, physical therapy, surgery - list here"]
   },
-  "nextSteps": "What the user should do next (continue with treatment plan, see doctor, etc.)",
-  "redFlags": ["Any concerning findings from the tests"],
-  "estimatedRecovery": "Updated recovery timeline based on test severity",
+  "nextSteps": "What the user should do next (continue with treatment plan, see doctor if test results concerning, etc.)",
+  "redFlags": ["Any concerning findings from the tests that warrant professional evaluation"],
+  "estimatedRecovery": "Updated recovery timeline based on test severity with self-care",
   "confidenceImprovement": "How the tests improved diagnostic confidence (e.g., '85% confident vs 70% before')"
 }`;
 
