@@ -1,9 +1,6 @@
-import { Text, View } from 'react-native';
+import { LoginPage } from "./src/screens/LoginPage";
 
 export default function App() {
-  return (
-    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-      <Text>Hello World</Text>
-    </View>
-  );
+  return <LoginPage/>
 }
+
