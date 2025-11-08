@@ -1,0 +1,14 @@
+services:
+  db:
+    image: ankane/pgvector:latest
+    container_name: healthbay-db
+    restart: always
+    ports:
+      - "5432:5432"
+    env_file: .env             
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
