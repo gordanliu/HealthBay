@@ -1,16 +1,29 @@
-import pg from "pg";
+import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 
+// Load environment variables FIRST
 dotenv.config();
 
-const { Pool } = pg;
+// Validate environment variables
+if (!process.env.SUPABASE_URL) {
+  throw new Error("SUPABASE_URL environment variable is not set");
+}
+if (!process.env.SUPABASE_ANON_KEY) {
+  throw new Error("SUPABASE_ANON_KEY environment variable is not set");
+}
 
-const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASS,
-  port: process.env.DB_PORT || 5432,
-});
+console.log("🔧 Initializing Supabase client...");
 
-export default pool;
+// Create Supabase client singleton
+export const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
+// Create a new instance for per-request auth state
+export function createSupabaseClient() {
+  return createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+  );
+}
