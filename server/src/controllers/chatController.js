@@ -5,35 +5,56 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
+/**
+ * Main chat handler - supports multi-step conversational flow
+ * 
+ * Flow stages:
+ * 1. GATHERING_INFO - Collecting missing details about the injury/condition
+ * 2. DIAGNOSIS_LIST - Present possible diagnoses with confidence levels
+ * 3. DIAGNOSIS_DETAIL - Show detailed info for a specific diagnosis (triggered by diagnosisId)
+ * 4. GENERAL - Handle off-topic queries
+ */
 export async function handleChat(req, res) {
   try {
-    const { message, chatHistory = [] } = req.body;
+    const { 
+      message, 
+      chatHistory = [], 
+      diagnosisId = null,
+      currentContext = {} 
+    } = req.body;
     
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: "Message is required" });
     }
 
     console.log("🗣️ Received:", message);
-    
-    // Step 1: Classify the input type (injury vs general health)
-    const classification = await classifyInput(message);
-    console.log("📊 Classification:", classification.type);
+    console.log("📋 Current Context:", currentContext);
+    console.log("🔍 Diagnosis ID:", diagnosisId);
     
     let response;
     
-    if (classification.type === "injury") {
-      // Handle musculoskeletal injury query
-      response = await handleInjuryQuery(message, classification.details, chatHistory);
-    } else if (classification.type === "general_health") {
-      // Handle general health/illness query
-      response = await handleGeneralHealthQuery(message, classification.details, chatHistory);
+    // If diagnosisId is provided, user clicked on a diagnosis - show detailed info
+    if (diagnosisId) {
+      response = await handleDiagnosisDetail(diagnosisId, currentContext, message);
     } else {
-      // Handle off-topic or unclear queries
-      response = await handleGeneralQuery(message, chatHistory);
+      // Step 1: Classify the input type (injury vs general health)
+      const classification = await classifyInput(message, chatHistory);
+      console.log("📊 Classification:", classification.type);
+      
+      if (classification.type === "injury") {
+        // Handle musculoskeletal injury query with flow-based approach
+        response = await handleInjuryFlow(message, classification.details, chatHistory, currentContext);
+      } else if (classification.type === "general_health") {
+        // Handle general health/illness query
+        response = await handleGeneralHealthQuery(message, classification.details, chatHistory);
+      } else {
+        // Handle off-topic or unclear queries
+        response = await handleGeneralQuery(message, chatHistory);
+      }
     }
     
     // Log interaction for analysis
-    logInteraction(message, classification, response);
+    logInteraction(message, response);
     
     // Console log the full response for testing
     console.log("🤖 AI Response:", JSON.stringify(response, null, 2));
@@ -56,10 +77,14 @@ export async function handleChat(req, res) {
 /**
  * Classify whether input is about musculoskeletal injuries or general health
  */
-async function classifyInput(message) {
+async function classifyInput(message, chatHistory = []) {
+  const historyContext = chatHistory.length > 0 
+    ? `\n\nChat History:\n${chatHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}`
+    : '';
+    
   const prompt = `Analyze this health-related message and classify it:
 
-Message: "${message}"
+Message: "${message}"${historyContext}
 
 Determine if this is about:
 1. INJURY - Musculoskeletal injuries (sprains, strains, fractures, joint pain, sports injuries, muscle injuries, etc.)
@@ -78,7 +103,8 @@ Respond in JSON format:
     "severity": "mild|moderate|severe|unknown",
     "duration": "string (e.g., 'just happened', '2 days', 'chronic')",
     "context": "string (athlete, work-related, daily activity, etc.)",
-    "mechanism": "string (how injury occurred, if mentioned)"
+    "mechanism": "string (how injury occurred, if mentioned)",
+    "medical_history": "string (if mentioned)"
   }
 }`;
 
@@ -98,10 +124,78 @@ Respond in JSON format:
 }
 
 /**
- * Handle musculoskeletal injury queries
+ * Handle musculoskeletal injury queries with conversational flow
+ * Stage 1: Gather missing information
+ * Stage 2: Present diagnosis list
  */
-async function handleInjuryQuery(message, details, chatHistory) {
-  const { injury_name, body_part, symptoms, severity, duration, context } = details;
+async function handleInjuryFlow(message, details, chatHistory, currentContext) {
+  const { injury_name, body_part, symptoms, severity, duration, context, mechanism, medical_history } = details;
+  
+  // Determine what information is missing
+  const missingInfo = [];
+  if (!body_part || body_part === 'Not specified') missingInfo.push('body_part');
+  if (!symptoms || symptoms.length === 0) missingInfo.push('symptoms');
+  if (!duration || duration === 'Not specified') missingInfo.push('duration');
+  if (!context || context === 'Not specified') missingInfo.push('context');
+  if (!mechanism || mechanism === 'Not specified') missingInfo.push('mechanism');
+  
+  // STAGE 1: GATHERING_INFO - If critical information is missing, ask for it
+  if (missingInfo.length > 0 && !currentContext.infoGathered) {
+    return await gatherMissingInfo(message, details, missingInfo);
+  }
+  
+  // STAGE 2: DIAGNOSIS_LIST - Present possible diagnoses
+  return await generateDiagnosisList(message, details, chatHistory);
+}
+
+/**
+ * STAGE 1: Gather missing information from the user
+ */
+async function gatherMissingInfo(message, details, missingInfo) {
+  const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has reported an injury, but we need more details.
+
+User's current information:
+- Injury: ${details.injury_name || 'Unknown'}
+- Body Part: ${details.body_part || 'Not specified'}
+- Symptoms: ${details.symptoms?.join(', ') || 'Not specified'}
+- Severity: ${details.severity || 'Unknown'}
+- Duration: ${details.duration || 'Not specified'}
+- Context: ${details.context || 'Not specified'}
+- Mechanism: ${details.mechanism || 'Not specified'}
+
+User's message: "${message}"
+
+Missing information: ${missingInfo.join(', ')}
+
+Generate 2-4 specific questions to gather the missing information. Be conversational and empathetic.
+Ask about the most critical missing information first (symptoms, mechanism, duration).
+
+Format your response as a friendly message that:
+1. Acknowledges what they've told you
+2. Explains you need a bit more detail to provide accurate guidance
+3. Asks the specific questions
+
+Keep it concise and natural.`;
+
+  const result = await model.generateContent(prompt);
+  const aiResponse = result.response.text();
+  
+  return {
+    stage: "GATHERING_INFO",
+    type: "injury",
+    response: aiResponse,
+    missingInfo: missingInfo,
+    currentDetails: details,
+    nextAction: "answer_questions",
+    uiHint: "Show text input for user to answer questions"
+  };
+}
+
+/**
+ * STAGE 2: Generate list of possible diagnoses with confidence levels
+ */
+async function generateDiagnosisList(message, details, chatHistory) {
+  const { injury_name, body_part, symptoms, severity, duration, context, mechanism } = details;
   
   // Get relevant rehab documentation from RAG (gracefully handle DB errors)
   let ragContext;
@@ -121,53 +215,138 @@ User's injury information:
 - Severity: ${severity || 'Unknown'}
 - Duration: ${duration || 'Not specified'}
 - Context: ${context || 'Not specified'}
-
-User's message: "${message}"
+- Mechanism: ${mechanism || 'Not specified'}
 
 Rehabilitation documentation context:
 ${ragContext || 'No specific documentation found for this injury.'}
 
-Provide a comprehensive response with:
+Generate a list of 2-4 possible diagnoses based on the information provided.
 
-1. **Possible Injuries** (2-3 most likely based on symptoms):
-   - List injuries with confidence levels (high/medium/low)
-   - Brief explanation of each
+Return ONLY a JSON object with this exact structure:
+{
+  "summary": "Brief 1-2 sentence acknowledgment of their injury and what you're analyzing",
+  "diagnoses": [
+    {
+      "id": "unique-id-1",
+      "name": "Diagnosis Name",
+      "confidence": "high|medium|low",
+      "shortDescription": "One sentence description",
+      "matchedSymptoms": ["symptom1", "symptom2"],
+      "typicalCauses": "Brief explanation of typical causes"
+    }
+  ],
+  "immediateAdvice": "Brief immediate care advice (RICE protocol or similar) in 1-2 sentences"
+}
 
-2. **Immediate Care Recommendations**:
-   - RICE protocol or appropriate first aid
-   - What to do in the first 24-48 hours
-   - Pain management suggestions
-
-3. **Recovery Timeline**:
-   - Expected healing time for each possible injury
-   - Phases of recovery (acute, subacute, chronic)
-
-4. **Diagnostic Questions**:
-   - Ask 2-3 specific movement tests or questions to help narrow down the diagnosis
-   - Example: "Can you bear weight on your ankle?" or "Does it hurt more when you move it in a certain direction?"
-
-5. **Treatment Recommendations**:
-   - Exercises or therapies for each recovery phase
-   - When to progress to next phase
-
-6. **Red Flags**:
-   - Symptoms that require immediate medical attention
-   - When to see a doctor vs. self-care
-
-**Important**: Include medical disclaimer at the end.
-
-Format your response in a clear, structured way.`;
+Make IDs lowercase with hyphens (e.g., "ankle-sprain", "high-ankle-sprain").`;
 
   const result = await model.generateContent(prompt);
-  const aiResponse = result.response.text();
+  const responseText = result.response.text();
+  
+  let parsedDiagnoses;
+  try {
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      parsedDiagnoses = JSON.parse(jsonMatch[0]);
+    }
+  } catch (e) {
+    console.warn("Failed to parse diagnoses JSON, using fallback");
+    parsedDiagnoses = {
+      summary: "Based on your symptoms, here are the possible conditions:",
+      diagnoses: [],
+      immediateAdvice: "Apply ice and rest the affected area."
+    };
+  }
   
   return {
+    stage: "DIAGNOSIS_LIST",
     type: "injury",
-    response: aiResponse,
-    classification: details,
+    response: parsedDiagnoses.summary,
+    diagnoses: parsedDiagnoses.diagnoses,
+    immediateAdvice: parsedDiagnoses.immediateAdvice,
+    currentDetails: details,
     ragUsed: !!ragContext,
-    diagnosticMode: true,
-    disclaimer: "⚠️ This is AI-generated guidance based on general information. Always consult a healthcare professional for accurate diagnosis and personalized treatment."
+    nextAction: "select_diagnosis",
+    uiHint: "Show list of diagnoses as clickable cards. When user clicks, send diagnosisId in next request"
+  };
+}
+
+/**
+ * STAGE 3: Show detailed information for a specific diagnosis
+ * Triggered when user clicks on a diagnosis from the list
+ */
+async function handleDiagnosisDetail(diagnosisId, currentContext, userMessage) {
+  const details = currentContext.currentDetails || {};
+  
+  const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has selected a specific diagnosis to learn more about.
+
+Diagnosis ID: ${diagnosisId}
+User's Context:
+- Body Part: ${details.body_part || 'Not specified'}
+- Symptoms: ${details.symptoms?.join(', ') || 'Not specified'}
+- Duration: ${details.duration || 'Not specified'}
+- Context: ${details.context || 'Not specified'}
+
+User's message: "${userMessage}"
+
+Provide comprehensive information about this diagnosis. Return ONLY a JSON object:
+
+{
+  "diagnosisName": "Full name of the diagnosis",
+  "overview": "2-3 sentence overview of this condition",
+  "detailedSymptoms": ["List of typical symptoms"],
+  "causes": "Detailed explanation of what causes this injury",
+  "recoveryTimeline": {
+    "acute": "Days 1-7: Description of acute phase and care",
+    "subacute": "Weeks 1-3: Description of subacute phase",
+    "chronic": "Weeks 3+: Description of return to activity"
+  },
+  "treatmentPlan": {
+    "immediate": ["List of immediate actions - RICE protocol"],
+    "ongoing": ["List of ongoing treatments and exercises"],
+    "rehabilitation": ["List of rehab exercises and progressions"]
+  },
+  "diagnosticTests": [
+    {
+      "name": "Test name (e.g., 'Anterior Drawer Test')",
+      "description": "How to perform this test",
+      "positiveIndicator": "What indicates a positive test"
+    }
+  ],
+  "redFlags": ["List of symptoms requiring immediate medical attention"],
+  "whenToSeeDoctorImmediate": ["Situations requiring immediate medical care"],
+  "whenToSeeDoctor24_48hrs": ["Situations to see doctor within 24-48 hours"],
+  "selfCareAppropriate": "When self-care is appropriate",
+  "estimatedRecoveryTime": "e.g., '4-6 weeks for moderate cases'",
+  "returnToActivityGuidelines": "Guidelines for when to return to sports/activities"
+}`;
+
+  const result = await model.generateContent(prompt);
+  const responseText = result.response.text();
+  
+  let diagnosisDetail;
+  try {
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      diagnosisDetail = JSON.parse(jsonMatch[0]);
+    }
+  } catch (e) {
+    console.warn("Failed to parse diagnosis detail JSON");
+    diagnosisDetail = {
+      diagnosisName: diagnosisId,
+      overview: "Detailed information about this diagnosis.",
+      error: "Failed to load complete details"
+    };
+  }
+  
+  return {
+    stage: "DIAGNOSIS_DETAIL",
+    type: "injury",
+    diagnosisId: diagnosisId,
+    diagnosisDetail: diagnosisDetail,
+    disclaimer: "⚠️ This is AI-generated guidance based on general information. Always consult a healthcare professional for accurate diagnosis and personalized treatment.",
+    nextAction: "conversation",
+    uiHint: "Show detailed diagnosis page with sections. User can ask follow-up questions."
   };
 }
 
@@ -189,7 +368,7 @@ User's message: "${message}"
 
 Provide:
 
-1. **Possible Conditions** (2-3 most likely):
+1. **Possible Conditions** (list of all possible diagnoses with confidence levels):
    - List potential conditions with likelihood
    - Brief explanation
 
@@ -256,11 +435,11 @@ Keep it concise (2-3 sentences).`;
 /**
  * Log interaction for future analysis
  */
-function logInteraction(message, classification, response) {
+function logInteraction(message, response) {
   const logEntry = {
     timestamp: new Date().toISOString(),
     message: message.substring(0, 200), // Truncate for privacy
-    classification: classification.type,
+    stage: response.stage || 'unknown',
     responseType: response.type,
     ragUsed: response.ragUsed || false
   };
