@@ -1,9 +1,11 @@
-import { Text, View } from 'react-native';
+// App.js
+import { AuthProvider} from './src/context/AuthContext';
+import Navigation from './src/navigation/Navigation';
 
 export default function App() {
   return (
-    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-      <Text>Hello World</Text>
-    </View>
+    <AuthProvider>
+      <Navigation />
+    </AuthProvider>
   );
 }
