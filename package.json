@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "format:client": "prettier --write client/"
   },
   "devDependencies": {
     "prettier": "^3.6.2"
