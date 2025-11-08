@@ -12,7 +12,8 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
  * 1. GATHERING_INFO - Collecting missing details about the injury/condition
  * 2. DIAGNOSIS_LIST - Present possible diagnoses with confidence levels
  * 3. DIAGNOSIS_DETAIL - Show detailed info for a specific diagnosis (triggered by diagnosisId)
- * 4. GENERAL - Handle off-topic queries
+ * 4. DIAGNOSTIC_TEST - Interactive guided diagnostic testing (triggered by startDiagnosticTest)
+ * 5. GENERAL - Handle off-topic queries
  */
 export async function handleChat(req, res) {
   try {
@@ -20,7 +21,11 @@ export async function handleChat(req, res) {
       message, 
       chatHistory = [], 
       diagnosisId = null,
-      currentContext = {} 
+      currentContext = {},
+      startDiagnosticTest = false,
+      testResponse = null,
+      exitDiagnosticTest = false,
+      selectedSymptoms = null  // New: for symptom checklist submission
     } = req.body;
     
     if (!message || typeof message !== 'string') {
@@ -30,11 +35,34 @@ export async function handleChat(req, res) {
     console.log("🗣️ Received:", message);
     console.log("📋 Current Context:", currentContext);
     console.log("🔍 Diagnosis ID:", diagnosisId);
+    console.log("🧪 Start Diagnostic Test:", startDiagnosticTest);
+    console.log("📝 Test Response:", testResponse);
+    console.log("🚪 Exit Diagnostic Test:", exitDiagnosticTest);
+    console.log("✅ Selected Symptoms:", selectedSymptoms);
     
     let response;
     
+    // If user wants to exit diagnostic testing and return to diagnosis detail
+    if (exitDiagnosticTest) {
+      const exitDiagnosisId = currentContext.testSession?.diagnosisId || diagnosisId;
+      response = await handleDiagnosisDetail(exitDiagnosisId, currentContext, "Return to diagnosis details");
+      response.returnedFromTest = true;
+      response.message = "You've exited the diagnostic tests and returned to the diagnosis details.";
+    }
+    // If user submitted symptom checklist, process it and move forward
+    else if (selectedSymptoms !== null) {
+      response = await handleSymptomSubmission(selectedSymptoms, currentContext, message, chatHistory);
+    }
+    // If user is in the middle of diagnostic testing
+    else if (testResponse !== null) {
+      response = await handleDiagnosticTestResponse(testResponse, currentContext);
+    }
+    // If user wants to start diagnostic tests
+    else if (startDiagnosticTest) {
+      response = await initiateDiagnosticTests(diagnosisId, currentContext);
+    }
     // If diagnosisId is provided, user clicked on a diagnosis - show detailed info
-    if (diagnosisId) {
+    else if (diagnosisId) {
       response = await handleDiagnosisDetail(diagnosisId, currentContext, message);
     } else {
       // Step 1: Classify the input type (injury vs general health)
@@ -152,6 +180,12 @@ async function handleInjuryFlow(message, details, chatHistory, currentContext) {
  * STAGE 1: Gather missing information from the user
  */
 async function gatherMissingInfo(message, details, missingInfo) {
+  // If symptoms are missing, provide structured symptom checklist
+  if (missingInfo.includes('symptoms')) {
+    return await getSymptomChecklist(message, details, missingInfo);
+  }
+  
+  // For other missing info, ask conversational questions
   const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has reported an injury, but we need more details.
 
 User's current information:
@@ -168,7 +202,7 @@ User's message: "${message}"
 Missing information: ${missingInfo.join(', ')}
 
 Generate 2-4 specific questions to gather the missing information. Be conversational and empathetic.
-Ask about the most critical missing information first (symptoms, mechanism, duration).
+Ask about the most critical missing information first (mechanism, duration, severity).
 
 Format your response as a friendly message that:
 1. Acknowledges what they've told you
@@ -189,6 +223,122 @@ Keep it concise and natural.`;
     nextAction: "answer_questions",
     uiHint: "Show text input for user to answer questions"
   };
+}
+
+/**
+ * Generate symptom checklist based on body part
+ */
+async function getSymptomChecklist(message, details, missingInfo) {
+  const bodyPart = details.body_part?.toLowerCase() || 'general';
+  
+  // Get AI to generate relevant symptoms for the specific body part
+  const prompt = `You are HealthBay. The user has an injury to their ${bodyPart}.
+
+Generate a comprehensive list of common symptoms for ${bodyPart} injuries that a user might experience.
+Include both common and less common symptoms to ensure comprehensive diagnosis.
+
+Return ONLY a JSON object with this structure:
+{
+  "message": "Brief empathetic message (1-2 sentences) asking them to check off their symptoms",
+  "symptomCategories": {
+    "pain": {
+      "label": "Pain Characteristics",
+      "symptoms": ["Sharp pain", "Dull ache", "Throbbing pain", "Burning sensation", "Stabbing pain"]
+    },
+    "mobility": {
+      "label": "Movement Issues",
+      "symptoms": ["Limited range of motion", "Stiffness", "Unable to bear weight", "Difficulty moving", "Clicking/popping"]
+    },
+    "appearance": {
+      "label": "Visual Changes",
+      "symptoms": ["Swelling", "Bruising", "Redness", "Deformity", "Discoloration"]
+    },
+    "sensation": {
+      "label": "Sensory Changes",
+      "symptoms": ["Numbness", "Tingling", "Weakness", "Instability", "Loss of sensation"]
+    },
+    "functional": {
+      "label": "Functional Impact",
+      "symptoms": ["Difficulty with daily activities", "Cannot perform sport/activity", "Sleep disruption", "Affects work"]
+    }
+  }
+}
+
+Customize the symptoms to be specific and relevant for ${bodyPart} injuries.`;
+
+  const result = await model.generateContent(prompt);
+  const responseText = result.response.text();
+  
+  let symptomData;
+  try {
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      symptomData = JSON.parse(jsonMatch[0]);
+    }
+  } catch (e) {
+    // Fallback to generic symptoms
+    symptomData = {
+      message: `I'd like to understand your symptoms better. Please check all that apply to your ${bodyPart} injury:`,
+      symptomCategories: {
+        pain: {
+          label: "Pain Characteristics",
+          symptoms: ["Sharp pain", "Dull ache", "Throbbing pain", "Burning sensation", "Stabbing pain"]
+        },
+        mobility: {
+          label: "Movement Issues",
+          symptoms: ["Limited range of motion", "Stiffness", "Unable to bear weight", "Difficulty moving"]
+        },
+        appearance: {
+          label: "Visual Changes",
+          symptoms: ["Swelling", "Bruising", "Redness", "Deformity"]
+        },
+        sensation: {
+          label: "Sensory Changes",
+          symptoms: ["Numbness", "Tingling", "Weakness", "Instability"]
+        }
+      }
+    };
+  }
+  
+  return {
+    stage: "GATHERING_INFO",
+    substage: "SYMPTOM_CHECKLIST",
+    type: "injury",
+    response: symptomData.message,
+    symptomChecklist: symptomData.symptomCategories,
+    missingInfo: missingInfo.filter(info => info !== 'symptoms'),
+    currentDetails: details,
+    nextAction: "select_symptoms",
+    uiHint: "Show checkbox list organized by categories with 'Other' text input field at bottom",
+    hasOtherOption: true,
+    otherLabel: "Other symptoms not listed:"
+  };
+}
+
+/**
+ * Handle symptom checklist submission
+ */
+async function handleSymptomSubmission(selectedSymptoms, currentContext, message, chatHistory) {
+  // Merge selected symptoms with current details
+  const updatedDetails = {
+    ...currentContext.currentDetails,
+    symptoms: selectedSymptoms
+  };
+  
+  // Check if there's still other missing info
+  const { body_part, duration, context, mechanism } = updatedDetails;
+  const missingInfo = [];
+  if (!duration || duration === 'Not specified') missingInfo.push('duration');
+  if (!context || context === 'Not specified') missingInfo.push('context');
+  if (!mechanism || mechanism === 'Not specified') missingInfo.push('mechanism');
+  
+  // If other critical info is still missing, ask for it
+  if (missingInfo.length > 0) {
+    return await gatherMissingInfo(message, updatedDetails, missingInfo);
+  }
+  
+  // All info gathered, proceed to diagnosis list
+  return await generateDiagnosisList(message, updatedDetails, chatHistory);
 }
 
 /**
@@ -345,8 +495,417 @@ Provide comprehensive information about this diagnosis. Return ONLY a JSON objec
     diagnosisId: diagnosisId,
     diagnosisDetail: diagnosisDetail,
     disclaimer: "⚠️ This is AI-generated guidance based on general information. Always consult a healthcare professional for accurate diagnosis and personalized treatment.",
-    nextAction: "conversation",
-    uiHint: "Show detailed diagnosis page with sections. User can ask follow-up questions."
+    nextAction: "conversation_or_test",
+    uiHint: "Show detailed diagnosis page with sections. User can ask follow-up questions or start diagnostic tests.",
+    actions: [
+      {
+        id: "start_diagnostic_test",
+        label: "Start Diagnostic Tests",
+        description: "I'll guide you through tests to help confirm this diagnosis"
+      },
+      {
+        id: "view_treatment",
+        label: "View Treatment Plan",
+        description: "Skip to treatment and recovery information"
+      }
+    ]
+  };
+}
+
+/**
+ * STAGE 4: Initiate interactive diagnostic testing
+ */
+async function initiateDiagnosticTests(diagnosisId, currentContext) {
+  const details = currentContext.currentDetails || {};
+  
+  const prompt = `You are HealthBay, an AI rehabilitation assistant. Generate a series of 3-5 diagnostic tests for this injury.
+
+Diagnosis ID: ${diagnosisId}
+Body Part: ${details.body_part || 'Not specified'}
+
+Return ONLY a JSON object:
+{
+  "introduction": "Brief 1-2 sentence explanation of why these tests help",
+  "safetyWarning": "Safety instructions (stop if severe pain, etc.)",
+  "tests": [
+    {
+      "id": "test-1",
+      "name": "Test Name",
+      "purpose": "What this test checks for",
+      "steps": [
+        "Step 1 instruction",
+        "Step 2 instruction",
+        "Step 3 instruction"
+      ],
+      "estimatedTime": "30 seconds",
+      "whatToLookFor": "Description of what indicates a positive test",
+      "safetyNote": "Any specific safety warnings for this test"
+    }
+  ]
+}
+
+Make test IDs lowercase with hyphens. Keep steps clear and concise.`;
+
+  const result = await model.generateContent(prompt);
+  const responseText = result.response.text();
+  
+  let testPlan;
+  try {
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      testPlan = JSON.parse(jsonMatch[0]);
+    }
+  } catch (e) {
+    console.warn("Failed to parse test plan JSON");
+    testPlan = {
+      introduction: "Let's perform some diagnostic tests.",
+      safetyWarning: "Stop immediately if you experience severe pain.",
+      tests: []
+    };
+  }
+  
+  // Initialize test session
+  return {
+    stage: "DIAGNOSTIC_TEST_INTRO",
+    type: "injury",
+    diagnosisId: diagnosisId,
+    testSession: {
+      testPlan: testPlan,
+      currentTestIndex: 0,
+      totalTests: testPlan.tests?.length || 0,
+      currentStepIndex: 0,
+      testResults: [],
+      startTime: new Date().toISOString(),
+      diagnosisId: diagnosisId  // Store diagnosisId in session for easy access
+    },
+    introduction: testPlan.introduction,
+    safetyWarning: testPlan.safetyWarning,
+    nextAction: "begin_first_test",
+    uiHint: "Show introduction and safety warning. Button to start first test.",
+    navigation: {
+      canGoBack: true,
+      backAction: "exit_to_diagnosis",
+      backLabel: "← Back to Diagnosis"
+    }
+  };
+}
+
+/**
+ * Handle diagnostic test responses and guide through steps
+ */
+async function handleDiagnosticTestResponse(testResponse, currentContext) {
+  const testSession = currentContext.testSession || {};
+  const { testPlan, currentTestIndex, currentStepIndex, testResults } = testSession;
+  
+  if (!testPlan || !testPlan.tests) {
+    return {
+      stage: "ERROR",
+      response: "Test session not found. Please restart diagnostic tests.",
+      nextAction: "restart"
+    };
+  }
+  
+  const currentTest = testPlan.tests[currentTestIndex];
+  const totalSteps = currentTest.steps.length;
+  
+  // Handle different response types
+  if (testResponse.action === "start_test") {
+    // User is starting the current test - show first step
+    return {
+      stage: "DIAGNOSTIC_TEST_STEP",
+      type: "injury",
+      testSession: {
+        ...testSession,
+        currentStepIndex: 0
+      },
+      currentTest: {
+        id: currentTest.id,
+        name: currentTest.name,
+        purpose: currentTest.purpose,
+        stepNumber: 1,
+        totalSteps: totalSteps,
+        stepInstruction: currentTest.steps[0],
+        estimatedTime: currentTest.estimatedTime,
+        safetyNote: currentTest.safetyNote
+      },
+      progress: {
+        testNumber: currentTestIndex + 1,
+        totalTests: testPlan.tests.length,
+        percentage: Math.round(((currentTestIndex) / testPlan.tests.length) * 100)
+      },
+      nextAction: "complete_step",
+      uiHint: "Show step instruction with timer. Button for 'I've completed this step' or 'Stop - this causes pain'",
+      navigation: {
+        canGoBack: true,
+        backAction: "exit_to_diagnosis",
+        backLabel: "← Exit Test"
+      }
+    };
+  }
+  
+  else if (testResponse.action === "next_step") {
+    // User completed current step, move to next step
+    const nextStepIndex = currentStepIndex + 1;
+    
+    if (nextStepIndex < totalSteps) {
+      // More steps in current test
+      return {
+        stage: "DIAGNOSTIC_TEST_STEP",
+        type: "injury",
+        testSession: {
+          ...testSession,
+          currentStepIndex: nextStepIndex
+        },
+        currentTest: {
+          id: currentTest.id,
+          name: currentTest.name,
+          purpose: currentTest.purpose,
+          stepNumber: nextStepIndex + 1,
+          totalSteps: totalSteps,
+          stepInstruction: currentTest.steps[nextStepIndex],
+          estimatedTime: currentTest.estimatedTime,
+          safetyNote: currentTest.safetyNote
+        },
+        progress: {
+          testNumber: currentTestIndex + 1,
+          totalTests: testPlan.tests.length,
+          percentage: Math.round(((currentTestIndex + (nextStepIndex / totalSteps)) / testPlan.tests.length) * 100)
+        },
+        nextAction: "complete_step",
+        uiHint: "Show next step instruction. Button for 'I've completed this step' or 'Stop - this causes pain'",
+        navigation: {
+          canGoBack: true,
+          backAction: "exit_to_diagnosis",
+          backLabel: "← Exit Test"
+        }
+      };
+    } else {
+      // All steps completed, ask for test result
+      return {
+        stage: "DIAGNOSTIC_TEST_RESULT",
+        type: "injury",
+        testSession: testSession,
+        currentTest: {
+          id: currentTest.id,
+          name: currentTest.name,
+          whatToLookFor: currentTest.whatToLookFor
+        },
+        question: `You've completed the ${currentTest.name}. ${currentTest.whatToLookFor}\n\nDid you experience this during the test?`,
+        progress: {
+          testNumber: currentTestIndex + 1,
+          totalTests: testPlan.tests.length,
+          percentage: Math.round(((currentTestIndex + 1) / testPlan.tests.length) * 100)
+        },
+        nextAction: "submit_result",
+        uiHint: "Show question with options: 'Yes (Positive)', 'No (Negative)', 'Unsure', 'Severe pain - stopped test'",
+        navigation: {
+          canGoBack: true,
+          backAction: "exit_to_diagnosis",
+          backLabel: "← Exit Test"
+        }
+      };
+    }
+  }
+  
+  else if (testResponse.action === "submit_result") {
+    // User submitted test result
+    const result = testResponse.result; // 'positive', 'negative', 'unsure', 'stopped'
+    const painLevel = testResponse.painLevel || null; // 0-10 scale
+    
+    // Record result
+    const updatedResults = [
+      ...testResults,
+      {
+        testId: currentTest.id,
+        testName: currentTest.name,
+        result: result,
+        painLevel: painLevel,
+        timestamp: new Date().toISOString()
+      }
+    ];
+    
+    const nextTestIndex = currentTestIndex + 1;
+    
+    // Check if more tests remain
+    if (nextTestIndex < testPlan.tests.length) {
+      // Move to next test
+      return {
+        stage: "DIAGNOSTIC_TEST_TRANSITION",
+        type: "injury",
+        testSession: {
+          ...testSession,
+          currentTestIndex: nextTestIndex,
+          currentStepIndex: 0,
+          testResults: updatedResults
+        },
+        completedTest: {
+          name: currentTest.name,
+          result: result
+        },
+        nextTest: {
+          name: testPlan.tests[nextTestIndex].name,
+          purpose: testPlan.tests[nextTestIndex].purpose
+        },
+        progress: {
+          testNumber: nextTestIndex,
+          totalTests: testPlan.tests.length,
+          percentage: Math.round((nextTestIndex / testPlan.tests.length) * 100)
+        },
+        nextAction: "start_next_test",
+        uiHint: "Show transition screen. Button to 'Start Next Test' or 'Stop Testing'",
+        navigation: {
+          canGoBack: true,
+          backAction: "exit_to_diagnosis",
+          backLabel: "← Exit Tests"
+        }
+      };
+    } else {
+      // All tests completed - analyze results
+      return await analyzeDiagnosticResults(testSession.diagnosisId, updatedResults, currentContext);
+    }
+  }
+  
+  else if (testResponse.action === "stop_test") {
+    // User stopped due to pain or other reason
+    return {
+      stage: "DIAGNOSTIC_TEST_STOPPED",
+      type: "injury",
+      testSession: {
+        ...testSession,
+        stopped: true,
+        stopReason: testResponse.reason || "User stopped test"
+      },
+      message: "You've stopped the diagnostic tests. This is important information.",
+      recommendation: "Severe pain during tests may indicate a more serious injury. Consider seeing a healthcare professional for proper evaluation.",
+      partialResults: testResults,
+      nextAction: "view_recommendations",
+      uiHint: "Show stop message and recommendations. Option to return to diagnosis detail."
+    };
+  }
+  
+  return {
+    stage: "ERROR",
+    response: "Unknown test action",
+    nextAction: "restart"
+  };
+}
+
+/**
+ * Analyze diagnostic test results and provide final assessment
+ */
+async function analyzeDiagnosticResults(diagnosisId, testResults, currentContext) {
+  const details = currentContext.currentDetails || {};
+  
+  const resultsString = testResults.map(r => 
+    `${r.testName}: ${r.result}${r.painLevel ? ` (Pain: ${r.painLevel}/10)` : ''}`
+  ).join('\n');
+  
+  const prompt = `You are HealthBay, an AI rehabilitation assistant. Analyze diagnostic test results and provide a REFINED diagnosis with improved treatment recommendations.
+
+Original Diagnosis ID: ${diagnosisId}
+User Context:
+- Body Part: ${details.body_part}
+- Symptoms: ${details.symptoms?.join(', ')}
+- Context: ${details.context}
+
+Test Results:
+${resultsString}
+
+Based on these test results, provide a comprehensive refined assessment. Return ONLY a JSON object:
+{
+  "confidenceLevel": "high|medium|low",
+  "refinedDiagnosis": {
+    "name": "Updated diagnosis name if changed, or same as original",
+    "severity": "mild|moderate|severe",
+    "explanation": "Why this diagnosis is confirmed/updated based on test results"
+  },
+  "assessment": "2-3 sentence interpretation of the test results and what they indicate",
+  "diagnosisConfirmation": "Does this confirm, partially confirm, or contradict the suspected diagnosis?",
+  "painAnalysis": "Analysis of pain levels reported during tests and what they indicate",
+  "refinedRecommendations": [
+    "Specific recommendation based on test results and pain levels",
+    "Another specific recommendation",
+    "Modified recommendation due to test findings"
+  ],
+  "refinedTreatmentPlan": {
+    "immediate": ["Immediate actions based on test results"],
+    "week1": ["Week 1 treatments adjusted for severity"],
+    "week2_3": ["Week 2-3 treatments"],
+    "ongoing": ["Long-term rehabilitation"]
+  },
+  "nextSteps": "What the user should do next (continue with treatment plan, see doctor, etc.)",
+  "redFlags": ["Any concerning findings from the tests"],
+  "estimatedRecovery": "Updated recovery timeline based on test severity",
+  "confidenceImprovement": "How the tests improved diagnostic confidence (e.g., '85% confident vs 70% before')"
+}`;
+
+  const result = await model.generateContent(prompt);
+  const responseText = result.response.text();
+  
+  let analysis;
+  try {
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      analysis = JSON.parse(jsonMatch[0]);
+    }
+  } catch (e) {
+    console.warn("Failed to parse analysis JSON");
+    analysis = {
+      confidenceLevel: "medium",
+      refinedDiagnosis: {
+        name: diagnosisId,
+        severity: "moderate",
+        explanation: "Tests provide moderate confirmation"
+      },
+      assessment: "Tests completed. Results indicate moderate concern.",
+      diagnosisConfirmation: "Results provide some confirmation.",
+      painAnalysis: "Pain levels suggest moderate injury.",
+      refinedRecommendations: ["Follow treatment plan", "Monitor symptoms"],
+      refinedTreatmentPlan: {
+        immediate: ["RICE protocol"],
+        week1: ["Rest and ice"],
+        week2_3: ["Gentle exercises"],
+        ongoing: ["Progressive strengthening"]
+      },
+      nextSteps: "Continue with recommended treatment",
+      redFlags: [],
+      estimatedRecovery: "4-6 weeks",
+      confidenceImprovement: "Confidence increased with test results"
+    };
+  }
+  
+  return {
+    stage: "DIAGNOSTIC_TEST_COMPLETE",
+    type: "injury",
+    diagnosisId: diagnosisId,
+    testResults: testResults,
+    analysis: analysis,
+    disclaimer: "⚠️ These diagnostic tests are for educational purposes. A healthcare professional should perform a proper physical examination for accurate diagnosis.",
+    nextAction: "view_refined_treatment",
+    uiHint: "Show complete analysis with refined diagnosis and treatment plan. Options to view detailed treatment or return to diagnosis list.",
+    actions: [
+      {
+        id: "view_refined_treatment",
+        label: "View Personalized Treatment Plan",
+        description: "See your customized treatment based on test results",
+        primary: true
+      },
+      {
+        id: "back_to_diagnosis",
+        label: "Back to Diagnosis Details",
+        description: "Return to original diagnosis information"
+      },
+      {
+        id: "back_to_list",
+        label: "View Other Diagnoses",
+        description: "Return to diagnosis list"
+      }
+    ],
+    navigation: {
+      canGoBack: true,
+      backAction: "exit_to_diagnosis",
+      backLabel: "← Back to Diagnosis"
+    }
   };
 }
 
