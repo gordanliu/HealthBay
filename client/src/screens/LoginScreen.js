@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 
-import { Text, View, StyleSheet, TextInput, Button, Alert } from 'react-native';
+import {
+  Text,
+  View,
+  StyleSheet,
+  TextInput,
+  Button,
+  Alert,
+  TouchableOpacity,
+} from 'react-native';
 
 export default function LoginScreen({ navigation, setUser }) {
   const [username, setUsername] = useState('');
@@ -9,13 +17,10 @@ export default function LoginScreen({ navigation, setUser }) {
   const handleLogin = () => {
     if (username && password) {
       setUser({ name: username });
+      Alert.alert(`Welcome back, ${username}!`);
     } else {
       Alert.alert('Error', 'Please enter both username and password');
     }
-  };
-
-  const handleSignIn = () => {
-    setUser({ name: username || 'NewUser' });
   };
 
   return (
@@ -42,13 +47,16 @@ export default function LoginScreen({ navigation, setUser }) {
         secureTextEntry
       />
 
-      <View style={styles.buttonRow}>
-        <View style={styles.buttonWrapper}>
-          <Button title="Log In" onPress={handleLogin} />
-        </View>
-        <View style={styles.buttonWrapper}>
-          <Button title="Sign In" onPress={handleSignIn} color="#0b84ff" />
-        </View>
+      {/* login button */}
+      <View style={styles.buttonWrapper}>
+        <Button title="Log In" onPress={handleLogin} />
+      </View>
+
+      <View style={styles.signUpContainer}>
+        <Text style={styles.signUpText}>Don't have an account?</Text>
+        <TouchableOpacity onPress={() => navigation.navigate('SignUp')}>
+          <Text style={(styles.signUpText, styles.signUpLink)}> Sign Up</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -82,13 +90,17 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 16,
   },
-  buttonRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-  },
   buttonWrapper: {
-    flex: 1,
-    marginHorizontal: 5,
+    width: '100%',
+    marginBottom: 12,
   },
+  signUpContainer: {
+    flexDirection: 'row',
+    marginTop: 10,
+  },
+  signUpText: {
+    fontSize: 14,
+    color: '#333',
+  },
+  signUpLink: { color: '#0b84ff', fontWeight: 'bold' },
 });
