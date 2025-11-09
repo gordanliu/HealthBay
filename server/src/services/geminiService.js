@@ -11,7 +11,7 @@ export const gemini = genAI.getGenerativeModel({
 
 // Embedding model for vectors
 export const embedder = genAI.getGenerativeModel({
-  model: "text-embedding-004",
+  model: "embedding-001",
 });
 
 /**

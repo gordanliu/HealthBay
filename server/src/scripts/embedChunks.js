@@ -1,5 +1,12 @@
-import { supabase } from "../config/db.js";
-import { generateEmbedding } from "../services/geminiService.js";
+// server/src/scripts/embedChunks.js
+import dotenv from "dotenv";
+
+// ✅ Load environment variables from project root
+dotenv.config({ path: "../../.env" });
+
+// Now dynamically import modules that depend on env vars
+const { supabase } = await import("../config/db.js");
+const { generateEmbedding } = await import("../services/geminiService.js");
 
 /**
  * Split long text into smaller chunks (~500–700 words each)
@@ -19,6 +26,9 @@ function chunkText(text, maxWords = 600) {
 
 async function processDocuments() {
   try {
+    console.log("🧩 Using Supabase URL:", process.env.SUPABASE_URL || "❌ Missing");
+    console.log("🧩 Using GEMINI Key:", process.env.GEMINI_API_KEY ? "✅ Loaded" : "❌ Missing");
+
     console.log("🔍 Fetching all documents...");
     const { data: documents, error } = await supabase
       .from("documents")

@@ -66,14 +66,17 @@ export default function ChatScreen() {
       const aiResponse = responseData.response || 'No response';
       
       const newAiMsg = {
-        role: 'assistant',
-        text: aiResponse,
-        time: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
-      };
-      setMessages((prev) => [...prev, newAiMsg]);
+      role: 'assistant',
+       text: aiResponse,
+      time: new Date().toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  }),
+  provenance: responseData.provenance || null,
+  sources: responseData.sources || [],
+  ragUsed: responseData.ragUsed || false,
+};
+setMessages((prev) => [...prev, newAiMsg]);
       
       // Update context: use currentContext from response if available, otherwise build from response
       const newContext = responseData.currentContext || {
@@ -97,15 +100,15 @@ export default function ChatScreen() {
       }
       
       // Check if we should show diagnosis list
-      if (responseData.diagnoses && responseData.diagnoses.length > 0) {
-        setShowDiagnosisList(true);
-        setDiagnosisListData({
-          diagnoses: responseData.diagnoses,
-          summary: responseData.response,
-          immediateAdvice: responseData.immediateAdvice,
-          context: newContext
-        });
-      }
+     if (responseData.stage === 'DIAGNOSIS_LIST') {
+  setShowDiagnosisList(true);
+  setDiagnosisListData({
+    diagnoses: responseData.diagnoses || [],
+    summary: responseData.response || responseData.summary || "Let's go over what might be happening.",
+    immediateAdvice: responseData.immediateAdvice || "Try to rest and avoid painful movements for now.",
+    context: newContext
+  });
+}
     } catch (err) {
       console.error('❌ Error:', err);
       setMessages((prev) => [
@@ -361,7 +364,7 @@ export default function ChatScreen() {
       return (
         <ScrollView style={styles.testContainer} contentContainerStyle={styles.testContent}>
           <Text style={styles.testTitle}>🔬 Diagnostic Tests</Text>
-          <Text style={styles.testIntroText}>{response}</Text>
+          <Text style={styles.testIntroText}>{diagnosticTestData.introduction ||response}</Text>
           
           <View style={styles.safetyWarning}>
             <Text style={styles.safetyTitle}>⚠️ Safety First</Text>
