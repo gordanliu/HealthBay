@@ -1,20 +1,26 @@
-import express from "express";
-import cors from "cors";
-import testRagRoutes from "./src/routes/testRag.js";  // ✅ correct relative path
-import chatRoutes from "./src/routes/chatRoutes.js";   // ✅ same for chat
+import express from 'express';
+import cors from 'cors';
+import testRagRoutes from './src/routes/testRag.js'; // ✅ correct relative path
+import chatRoutes from './src/routes/chatRoutes.js'; // ✅ same for chat
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
+// Debug middleware: log all incoming requests
+app.use((req, res, next) => {
+  console.log(`[${req.method}] ${req.originalUrl}`);
+  next();
+});
+
 // Routes
-app.use("/api", testRagRoutes);
-app.use("/api/chat", chatRoutes);
+app.use('/api', testRagRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Health check (optional)
-app.get("/", (req, res) => {
-  res.send("✅ HealthBay backend running!");
+app.get('/', (req, res) => {
+  res.send('✅ HealthBay backend running!');
 });
 
 // Server listen
