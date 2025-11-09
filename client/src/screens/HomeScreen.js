@@ -7,7 +7,7 @@ export default function HomeScreen({ navigation }) {
       <Text style={styles.subtitle}>This is your dashboard.</Text>
       <Button
         title="Start New Consultation"
-        onPress={() => navigation.navigate('Chat')}
+        onPress={() => navigation.navigate('SymptomIntake')}
       />
     </View>
   );

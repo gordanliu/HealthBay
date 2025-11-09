@@ -1,7 +1,16 @@
 // client/src/api/chatApi.js
 import api from './apiClient';
 
-export async function sendChatMessage({ message, chatHistory, currentContext, selectedSymptoms, diagnosisId, startDiagnosticTest, testResponse }) {
+export async function sendChatMessage({
+  message,
+  chatHistory,
+  currentContext,
+  selectedSymptoms,
+  diagnosisId,
+  startDiagnosticTest,
+  testResponse,
+  exitDiagnosticTest,
+}) {
   const res = await api.post('/chat', {
     message,
     chatHistory,
@@ -10,7 +19,7 @@ export async function sendChatMessage({ message, chatHistory, currentContext, se
     diagnosisId,
     startDiagnosticTest,
     testResponse,
+    exitDiagnosticTest,
   });
   return res.data;
 }
-
