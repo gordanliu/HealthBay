@@ -65,8 +65,16 @@ export async function handleChat(req, res) {
     else if (diagnosisId) {
       response = await handleDiagnosisDetail(diagnosisId, currentContext, message);
     }
-    // If we have ongoing context, handle as conversational follow-up
-    else if (currentContext.currentDetails && Object.keys(currentContext.currentDetails).length > 0) {
+    // If we have ongoing context from GATHERING_INFO stage, handle as conversational follow-up
+    else if (currentContext.stage === "GATHERING_INFO" && currentContext.currentDetails) {
+      response = await handleConversationalFollowUp(message, currentContext, chatHistory);
+    }
+    // If we have diagnosis context (after diagnosis list), handle conversational follow-up
+    else if (currentContext.stage === "DIAGNOSIS_LIST" && currentContext.currentDetails) {
+      response = await handleConversationalFollowUp(message, currentContext, chatHistory);
+    }
+    // If we have other ongoing context (DIAGNOSIS_DETAIL, CONVERSATIONAL, etc.), handle follow-up
+    else if (currentContext.currentDetails && Object.keys(currentContext.currentDetails).length > 0 && currentContext.stage) {
       response = await handleConversationalFollowUp(message, currentContext, chatHistory);
     }
     else {
@@ -164,13 +172,35 @@ Respond in JSON format:
 async function handleInjuryFlow(message, details, chatHistory, currentContext) {
   const { injury_name, body_part, symptoms, severity, duration, context, mechanism, medical_history } = details;
   
+  console.log("🔍 Injury Flow - Checking details:", details);
+  
   // Determine what information is missing
+  // We need at least: body_part, symptoms (specific ones), duration, and either context or mechanism
   const missingInfo = [];
-  if (!body_part || body_part === 'Not specified') missingInfo.push('body_part');
-  if (!symptoms || symptoms.length === 0) missingInfo.push('symptoms');
-  if (!duration || duration === 'Not specified') missingInfo.push('duration');
-  if (!context || context === 'Not specified') missingInfo.push('context');
-  if (!mechanism || mechanism === 'Not specified') missingInfo.push('mechanism');
+  
+  // Body part is critical
+  if (!body_part || body_part === 'Not specified' || body_part === 'unknown') {
+    missingInfo.push('body_part');
+  }
+  
+  // Symptoms must be specific (not just "pain" or generic)
+  if (!symptoms || symptoms.length === 0 || 
+      (symptoms.length === 1 && (symptoms[0].toLowerCase().includes('pain') || symptoms[0].toLowerCase() === 'hurts'))) {
+    missingInfo.push('symptoms');
+  }
+  
+  // Duration is critical
+  if (!duration || duration === 'Not specified' || duration === 'unknown' || duration.toLowerCase().includes('not specified')) {
+    missingInfo.push('duration');
+  }
+  
+  // Need either context or mechanism (how it happened)
+  if ((!context || context === 'Not specified' || context === 'unknown') && 
+      (!mechanism || mechanism === 'Not specified' || mechanism === 'unknown')) {
+    missingInfo.push('context_or_mechanism');
+  }
+  
+  console.log("❓ Missing Info:", missingInfo);
   
   // STAGE 1: GATHERING_INFO - If critical information is missing, ask for it
   if (missingInfo.length > 0 && !currentContext.infoGathered) {
@@ -178,6 +208,7 @@ async function handleInjuryFlow(message, details, chatHistory, currentContext) {
   }
   
   // STAGE 2: DIAGNOSIS_LIST - Present possible diagnoses
+  console.log("✅ All info gathered, proceeding to diagnosis list");
   return await generateDiagnosisList(message, details, chatHistory);
 }
 
@@ -214,7 +245,9 @@ Create a dynamic, conversational response that:
 5. Ends with an engaging question that prompts them to respond
 
 Make it feel like a natural conversation, NOT a form to fill out.
-Be encouraging and supportive about their recovery journey.`;
+Be encouraging and supportive about their recovery journey.
+
+Use plain text formatting only - no bold (**), asterisks, or other markdown formatting in numbered lists or questions.`;
 
   const result = await model.generateContent(prompt);
   const aiResponse = result.response.text();
@@ -226,7 +259,13 @@ Be encouraging and supportive about their recovery journey.`;
     missingInfo: missingInfo,
     currentDetails: details,
     nextAction: "answer_questions",
-    uiHint: "Show text input for user to answer questions"
+    uiHint: "Show text input for user to answer questions",
+    // Include the stage in currentContext for frontend to send back
+    currentContext: {
+      stage: "GATHERING_INFO",
+      currentDetails: details,
+      missingInfo: missingInfo
+    }
   };
 }
 
@@ -327,6 +366,94 @@ Make the message warm and supportive, like talking to a caring professional.`;
 async function handleConversationalFollowUp(message, currentContext, chatHistory) {
   const details = currentContext.currentDetails || {};
   
+  // If we're in GATHERING_INFO stage, the user is answering our questions
+  // Re-classify their response to extract new information and merge with existing details
+  if (currentContext.stage === "GATHERING_INFO") {
+    console.log("🔄 User answering questions in GATHERING_INFO, re-classifying...");
+    console.log("📋 Existing Details:", details);
+    
+    // Check if we've already asked the user for information (interaction count)
+    const interactionCount = (currentContext.interactionCount || 0) + 1;
+    console.log("🔢 Interaction Count:", interactionCount);
+    
+    // Re-classify to extract new info from user's answer
+    const newClassification = await classifyInput(message, chatHistory);
+    console.log("🆕 New Classification:", newClassification.details);
+    
+    // Merge new details with existing details (only update if new info is better)
+    const mergedDetails = {
+      injury_name: newClassification.details.injury_name || details.injury_name,
+      body_part: newClassification.details.body_part && newClassification.details.body_part !== 'Not specified' 
+        ? newClassification.details.body_part 
+        : details.body_part,
+      symptoms: [
+        ...(details.symptoms || []),
+        ...(newClassification.details.symptoms || [])
+      ].filter((v, i, a) => a.indexOf(v) === i), // Remove duplicates
+      severity: newClassification.details.severity && newClassification.details.severity !== 'unknown' 
+        ? newClassification.details.severity 
+        : details.severity,
+      duration: newClassification.details.duration && newClassification.details.duration !== 'Not specified'
+        ? newClassification.details.duration
+        : details.duration,
+      context: newClassification.details.context && newClassification.details.context !== 'Not specified'
+        ? newClassification.details.context
+        : details.context,
+      mechanism: newClassification.details.mechanism && newClassification.details.mechanism !== 'Not specified'
+        ? newClassification.details.mechanism
+        : details.mechanism,
+      medical_history: newClassification.details.medical_history || details.medical_history
+    };
+    
+    console.log("📊 Merged Details:", mergedDetails);
+    
+    // If we've already asked once (interactionCount >= 2), just move forward with what we have
+    if (interactionCount >= 2) {
+      console.log("✅ Already asked once, moving to diagnosis list with available info");
+      return await generateDiagnosisList(message, mergedDetails, chatHistory);
+    }
+    
+    // Check what info is still missing with STRICT validation
+    const missingInfo = [];
+    
+    if (!mergedDetails.body_part || mergedDetails.body_part === 'Not specified' || mergedDetails.body_part === 'unknown') {
+      missingInfo.push('body_part');
+    }
+    
+    // Symptoms must be specific (not just "pain")
+    if (!mergedDetails.symptoms || mergedDetails.symptoms.length === 0 || 
+        (mergedDetails.symptoms.length === 1 && (mergedDetails.symptoms[0].toLowerCase().includes('pain') || mergedDetails.symptoms[0].toLowerCase() === 'hurts'))) {
+      missingInfo.push('symptoms');
+    }
+    
+    if (!mergedDetails.duration || mergedDetails.duration === 'Not specified' || mergedDetails.duration === 'unknown' || mergedDetails.duration.toLowerCase().includes('not specified')) {
+      missingInfo.push('duration');
+    }
+    
+    // Need either context or mechanism
+    if ((!mergedDetails.context || mergedDetails.context === 'Not specified' || mergedDetails.context === 'unknown') && 
+        (!mergedDetails.mechanism || mergedDetails.mechanism === 'Not specified' || mergedDetails.mechanism === 'unknown')) {
+      missingInfo.push('context_or_mechanism');
+    }
+    
+    console.log("❓ Still Missing:", missingInfo);
+    
+    // If we still have missing critical info, ask ONE MORE TIME
+    if (missingInfo.length > 0) {
+      const result = await gatherMissingInfo(message, mergedDetails, missingInfo);
+      result.currentContext = {
+        ...result.currentContext,
+        interactionCount: interactionCount
+      };
+      return result;
+    }
+    
+    // All info gathered! Move to diagnosis list
+    console.log("✅ All info gathered, generating diagnosis list...");
+    return await generateDiagnosisList(message, mergedDetails, chatHistory);
+  }
+  
+  // Otherwise, handle as a casual conversational follow-up (after diagnosis list/detail)
   // Check for concerning or inappropriate statements
   const lowerMessage = message.toLowerCase();
   const concerningPhrases = [
@@ -408,12 +535,22 @@ async function handleSymptomSubmission(selectedSymptoms, currentContext, message
   if (!context || context === 'Not specified') missingInfo.push('context');
   if (!mechanism || mechanism === 'Not specified') missingInfo.push('mechanism');
   
-  // If other critical info is still missing, ask for it
-  if (missingInfo.length > 0) {
-    return await gatherMissingInfo(message, updatedDetails, missingInfo);
+  // If other critical info is still missing AND we haven't asked before, ask ONCE
+  // Check if we've already asked (indicated by substage being SYMPTOM_CHECKLIST or interactionCount)
+  const hasAskedBefore = currentContext.substage === 'SYMPTOM_CHECKLIST' || currentContext.interactionCount > 0;
+  
+  if (missingInfo.length > 0 && !hasAskedBefore) {
+    // Ask once for remaining info
+    const result = await gatherMissingInfo(message, updatedDetails, missingInfo);
+    result.currentContext = {
+      ...result.currentContext,
+      interactionCount: 1 // Mark that we've asked once
+    };
+    return result;
   }
   
-  // All info gathered, proceed to diagnosis list
+  // Either we have all info OR we've already asked - proceed to diagnosis list
+  console.log("✅ Proceeding to diagnosis list after symptom selection");
   return await generateDiagnosisList(message, updatedDetails, chatHistory);
 }
 
@@ -706,6 +843,7 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
     return {
       stage: "DIAGNOSTIC_TEST_STEP",
       type: "injury",
+      response: currentTest.steps[0], // Add response field for client
       testSession: {
         ...testSession,
         currentStepIndex: 0
@@ -721,8 +859,10 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
         safetyNote: currentTest.safetyNote
       },
       progress: {
-        testNumber: currentTestIndex + 1,
+        currentTest: currentTestIndex + 1,
         totalTests: testPlan.tests.length,
+        currentStep: 1,
+        totalSteps: totalSteps,
         percentage: Math.round(((currentTestIndex) / testPlan.tests.length) * 100)
       },
       nextAction: "complete_step",
@@ -744,6 +884,7 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
       return {
         stage: "DIAGNOSTIC_TEST_STEP",
         type: "injury",
+        response: currentTest.steps[nextStepIndex], // Add response field for client
         testSession: {
           ...testSession,
           currentStepIndex: nextStepIndex
@@ -759,8 +900,10 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
           safetyNote: currentTest.safetyNote
         },
         progress: {
-          testNumber: currentTestIndex + 1,
+          currentTest: currentTestIndex + 1,
           totalTests: testPlan.tests.length,
+          currentStep: nextStepIndex + 1,
+          totalSteps: totalSteps,
           percentage: Math.round(((currentTestIndex + (nextStepIndex / totalSteps)) / testPlan.tests.length) * 100)
         },
         nextAction: "complete_step",
@@ -776,6 +919,7 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
       return {
         stage: "DIAGNOSTIC_TEST_RESULT",
         type: "injury",
+        response: `You've completed the ${currentTest.name}. ${currentTest.whatToLookFor}\n\nDid you experience this during the test?`,
         testSession: testSession,
         currentTest: {
           id: currentTest.id,
@@ -784,8 +928,10 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
         },
         question: `You've completed the ${currentTest.name}. ${currentTest.whatToLookFor}\n\nDid you experience this during the test?`,
         progress: {
-          testNumber: currentTestIndex + 1,
+          currentTest: currentTestIndex + 1,
           totalTests: testPlan.tests.length,
+          currentStep: totalSteps,
+          totalSteps: totalSteps,
           percentage: Math.round(((currentTestIndex + 1) / testPlan.tests.length) * 100)
         },
         nextAction: "submit_result",
@@ -1027,30 +1173,32 @@ User's message: "${message}"
 
 Provide:
 
-1. **Possible Conditions** (list of all possible diagnoses with confidence levels):
+1. Possible Conditions (list of all possible diagnoses with confidence levels):
    - List potential conditions with likelihood
    - Brief explanation
 
-2. **Symptom Management**:
+2. Symptom Management:
    - Home care recommendations
    - Over-the-counter remedies (if appropriate)
    - Comfort measures
 
-3. **When to Seek Medical Care**:
+3. When to Seek Medical Care:
    - Signs that require immediate attention
    - When to see a doctor within 24-48 hours
    - When self-care is appropriate
 
-4. **General Advice**:
+4. General Advice:
    - Rest, hydration, nutrition
    - What to avoid
    - Expected recovery timeline (if applicable)
 
-5. **Note About HealthBay**:
+5. Note About HealthBay:
    - Mention that HealthBay specializes in musculoskeletal injuries
    - Suggest seeing appropriate healthcare provider for this type of concern
 
-**Important**: Include medical disclaimer and strongly encourage consulting healthcare provider for non-injury conditions.`;
+IMPORTANT: Include medical disclaimer and strongly encourage consulting healthcare provider for non-injury conditions.
+
+Use plain text formatting only - no bold (**) or other markdown formatting.`;
 
   const result = await model.generateContent(prompt);
   const aiResponse = result.response.text();
