@@ -13,6 +13,12 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Debug middleware: log all incoming requests
+app.use((req, res, next) => {
+  console.log(`[${req.method}] ${req.originalUrl}`);
+  next();
+});
+
 // Routes
 app.use("/api/injury-history", userInjuryHistoryRoutes);
 app.use("/api", testRagRoutes);
@@ -20,8 +26,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
 
 // Health check (optional)
-app.get("/", (req, res) => {
-  res.send("✅ HealthBay backend running!");
+app.get('/', (req, res) => {
+  res.send('✅ HealthBay backend running!');
 });
 
 // Server listen
