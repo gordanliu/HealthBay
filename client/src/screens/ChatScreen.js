@@ -507,9 +507,20 @@ What would you like to know more about?`,
               
               setMessages((prev) => [...prev, confirmationMsg]);
               
+              // Save to history automatically
+              try {
+                await saveChatSession({
+                  messages: [...messages, confirmationMsg],
+                  context: confirmedContext,
+                });
+                console.log('✅ Chat automatically saved to history');
+              } catch (saveError) {
+                console.error('❌ Error auto-saving to history:', saveError);
+              }
+              
               Alert.alert(
                 '✅ Injury Confirmed',
-                `You can now chat about your ${diagnosisData.diagnosisName || diagnosisData.refinedDiagnosis?.name}. I'll help guide your recovery!`,
+                `You can now chat about your ${diagnosisData.diagnosisName || diagnosisData.refinedDiagnosis?.name}. I'll help guide your recovery! Your chat has been saved to history.`,
                 [{ text: 'OK' }]
               );
             },
@@ -598,6 +609,10 @@ What would you like to know more about?`,
 
     // DIAGNOSTIC_TEST_STEP - Show current step instructions
     if (stage === 'DIAGNOSTIC_TEST_STEP') {
+      const stepInstruction = currentTest?.stepInstruction || response || 'Follow the test instructions';
+      const stepNumber = currentTest?.stepNumber || 1;
+      const totalSteps = currentTest?.totalSteps || 1;
+      
       return (
         <ScrollView style={styles.testContainer} contentContainerStyle={styles.testContent}>
           <Text style={styles.testTitle}>{currentTest?.name || 'Diagnostic Test'}</Text>
@@ -605,28 +620,43 @@ What would you like to know more about?`,
           {progress && (
             <View style={styles.progressContainer}>
               <Text style={styles.progressText}>
-                Test {progress.currentTest} of {progress.totalTests} • Step {progress.currentStep} of {progress.totalSteps}
+                Test {progress.testNumber || 1} of {progress.totalTests || 1} • Step {stepNumber} of {totalSteps}
               </Text>
               <View style={styles.progressBar}>
                 <View 
                   style={[
                     styles.progressFill, 
-                    { width: `${(progress.currentStep / progress.totalSteps) * 100}%` }
+                    { width: `${(stepNumber / totalSteps) * 100}%` }
                   ]} 
                 />
               </View>
             </View>
           )}
 
+          {currentTest?.purpose && (
+            <View style={styles.purposeCard}>
+              <Text style={styles.purposeLabel}>Purpose:</Text>
+              <Text style={styles.purposeText}>{currentTest.purpose}</Text>
+            </View>
+          )}
+
           <View style={styles.stepCard}>
-            <Text style={styles.stepInstructions}>{response}</Text>
+            <Text style={styles.stepLabel}>Step {stepNumber} of {totalSteps}</Text>
+            <Text style={styles.stepInstructions}>{stepInstruction}</Text>
           </View>
+
+          {currentTest?.safetyNote && (
+            <View style={styles.safetyCard}>
+              <Text style={styles.safetyIcon}>⚠️</Text>
+              <Text style={styles.safetyText}>{currentTest.safetyNote}</Text>
+            </View>
+          )}
 
           <TouchableOpacity 
             style={styles.primaryButton}
             onPress={() => handleTestAction({ action: 'next_step' })}
           >
-            <Text style={styles.primaryButtonText}>Next Step</Text>
+            <Text style={styles.primaryButtonText}>✓ Completed This Step</Text>
           </TouchableOpacity>
 
           <TouchableOpacity 
@@ -770,6 +800,9 @@ What would you like to know more about?`,
 
     // DIAGNOSTIC_TEST_STOPPED - Test stopped due to severe pain
     if (stage === 'DIAGNOSTIC_TEST_STOPPED') {
+      console.log('🛑 Rendering DIAGNOSTIC_TEST_STOPPED');
+      console.log('📦 Data received:', JSON.stringify(data, null, 2));
+      
       return (
         <ScrollView style={styles.testContainer} contentContainerStyle={styles.testContent}>
           <View style={styles.completionHeader}>
@@ -779,25 +812,31 @@ What would you like to know more about?`,
             <Text style={styles.completionTitle}>Test Stopped</Text>
           </View>
 
-          <View style={[styles.resultsCard, { borderLeftColor: '#FF9800', borderLeftWidth: 4 }]}>
+          <View style={[styles.resultsCard, { borderLeftColor: '#FF9800', borderLeftWidth: 4, backgroundColor: '#FFF3E0' }]}>
             <Text style={styles.resultsName}>Safety First</Text>
-            <Text style={styles.sectionText}>{data.message || "You've stopped the diagnostic tests."}</Text>
+            <Text style={[styles.sectionText, { color: '#000' }]}>
+              {data.message || "You've stopped the diagnostic tests. This is important information."}
+            </Text>
           </View>
 
-          {data.recommendation && (
-            <View style={[styles.sectionCard, { backgroundColor: '#FFF3E0' }]}>
-              <Text style={[styles.sectionTitle, { color: '#E65100' }]}>⚕️ Important Recommendation</Text>
-              <Text style={styles.sectionText}>{data.recommendation}</Text>
-            </View>
-          )}
+          <View style={[styles.sectionCard, { backgroundColor: '#FFF3E0' }]}>
+            <Text style={[styles.sectionTitle, { color: '#E65100' }]}>⚕️ Important Recommendation</Text>
+            <Text style={[styles.sectionText, { color: '#000' }]}>
+              {data.recommendation || "Severe pain during tests may indicate a more serious injury. Consider seeing a healthcare professional for proper evaluation."}
+            </Text>
+          </View>
 
           {data.partialResults && data.partialResults.length > 0 && (
             <View style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>📊 Partial Test Results</Text>
-              <Text style={styles.sectionText}>Tests completed before stopping: {data.partialResults.length}</Text>
+              <Text style={[styles.sectionText, { marginBottom: 8, color: '#000' }]}>
+                Tests completed before stopping: {data.partialResults.length}
+              </Text>
               {data.partialResults.map((result, idx) => (
-                <View key={idx} style={{ marginTop: 8 }}>
-                  <Text style={styles.bulletText}>• {result.testName}: {result.result}</Text>
+                <View key={idx} style={{ marginTop: 4 }}>
+                  <Text style={[styles.bulletText, { color: '#000' }]}>
+                    • {result.testName}: {result.result}
+                  </Text>
                 </View>
               ))}
             </View>
@@ -1181,10 +1220,51 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
+  stepLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#007AFF',
+    marginBottom: 8,
+  },
   stepInstructions: {
     fontSize: 16,
     color: '#2c3e50',
     lineHeight: 24,
+  },
+  purposeCard: {
+    backgroundColor: '#E3F2FD',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  purposeLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1976D2',
+    marginBottom: 4,
+  },
+  purposeText: {
+    fontSize: 14,
+    color: '#1565C0',
+    lineHeight: 20,
+  },
+  safetyCard: {
+    backgroundColor: '#FFF3E0',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  safetyIcon: {
+    fontSize: 18,
+    marginRight: 8,
+  },
+  safetyText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#E65100',
+    lineHeight: 20,
   },
   questionCard: {
     backgroundColor: '#e3f2fd',

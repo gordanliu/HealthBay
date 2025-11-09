@@ -3,7 +3,7 @@ import { queryRAG } from "../services/ragService.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
 /**
  * Main chat handler - supports multi-step conversational flow
@@ -15,40 +15,6 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
  * 4. DIAGNOSTIC_TEST - Interactive guided diagnostic testing (triggered by startDiagnosticTest)
  * 5. GENERAL - Handle off-topic queries
  */
-
-// 🧠 Map common body part names to UUIDs in the database
-function mapBodyPartToId(bodyPart) {
-  if (!bodyPart) return null;
-  const map = {
-    shoulder: "0b45b8a5-7b57-4801-a08d-15833dc18031",
-    hand: "1050c110-3f82-475e-9062-d100ccf6a6c9",
-    foot: "11073780-db6c-4e02-a66d-2279ef4d04c2",
-    neck: "181809e1-1992-4574-915d-cb72413f6cba",
-    back: "19e77db8-54ff-40a6-94df-dca97533e81d",
-    wrist: "38cdf282-0a70-44a3-a126-6ee79133fcb1",
-    torso: "46459f39-ddc6-427f-b840-cf22f97d3ff3",
-    calf: "477a2c34-467e-43b9-85c5-761cd6119118",
-    forearm: "643017eb-9af1-4a10-a34c-0d7e1645d18c",
-    knee: "75b9c1bc-f117-414e-b29b-74b3b484e843",
-    thigh: "773fd2e4-10b6-4010-b3fe-0f2c0e503c9c",
-    leg: "a29d235c-8b2b-4f48-ba62-83e9799166c6",
-    hip: "c4c3bb5e-cbda-49ed-928e-8fbc9151bac0",
-    ankle: "ce023d78-654c-422e-85b7-030725fc4601",
-    pelvis: "e096ad7a-68c0-4b7c-b359-da209dc303aa",
-    elbow: "e128ddfa-0238-4aab-8efa-16a04d365a23",
-  };
-
-  const normalized = bodyPart.trim().toLowerCase();
-
-  // Handle basic plural / synonym cases
-  const normalizedKey = normalized
-    .replace(/\s+/g, "")
-    .replace(/s$/, ""); // e.g. "knees" -> "knee"
-
-  return map[normalizedKey] || null;
-}
-
-
 export async function handleChat(req, res) {
   try {
     const { 
@@ -99,16 +65,8 @@ export async function handleChat(req, res) {
     else if (diagnosisId) {
       response = await handleDiagnosisDetail(diagnosisId, currentContext, message);
     }
-    // If we have ongoing context from GATHERING_INFO stage, handle as conversational follow-up
-    else if (currentContext.stage === "GATHERING_INFO" && currentContext.currentDetails) {
-      response = await handleConversationalFollowUp(message, currentContext, chatHistory);
-    }
-    // If we have diagnosis context (after diagnosis list), handle conversational follow-up
-    else if (currentContext.stage === "DIAGNOSIS_LIST" && currentContext.currentDetails) {
-      response = await handleConversationalFollowUp(message, currentContext, chatHistory);
-    }
-    // If we have other ongoing context (DIAGNOSIS_DETAIL, CONVERSATIONAL, etc.), handle follow-up
-    else if (currentContext.currentDetails && Object.keys(currentContext.currentDetails).length > 0 && currentContext.stage) {
+    // If we have ongoing context, handle as conversational follow-up
+    else if (currentContext.currentDetails && Object.keys(currentContext.currentDetails).length > 0) {
       response = await handleConversationalFollowUp(message, currentContext, chatHistory);
     }
     else {
@@ -392,8 +350,6 @@ IMPORTANT: Include medical disclaimer. For non-musculoskeletal conditions, stron
  */
 async function handleInjuryFlow(message, details, chatHistory, currentContext) {
   const { injury_name, body_part, symptoms, severity, duration, context, mechanism, medical_history } = details;
-  
-  console.log("🔍 Injury Flow - Checking details:", details);
   
   // Determine what information is TRULY missing and ESSENTIAL
   // We ONLY need: body_part and symptoms (specific ones)
@@ -935,23 +891,26 @@ Instructions:
 - Keep all text natural and conversational without reference markers.
 - Maintain empathy and clarity in your tone.
 
-Return ONLY a JSON object with this structure:
+Return ONLY a JSON object with this exact structure:
 {
-  "summary": "2-3 sentence conversational acknowledgment explaining what you found and your thought process.",
+  "summary": "2-3 sentence conversational acknowledgment. Show empathy for their situation. Explain what you're analyzing. Make it personal and engaging, not clinical. End with something encouraging or a question.",
   "diagnoses": [
     {
       "id": "unique-id-1",
       "name": "Diagnosis Name",
       "confidence": "high|medium|low",
-      "shortDescription": "One sentence summary",
+      "shortDescription": "One sentence description",
       "matchedSymptoms": ["symptom1", "symptom2"],
-      "typicalCauses": "Brief explanation"
+      "typicalCauses": "Brief explanation of typical causes"
     }
   ],
-  "immediateAdvice": "Short practical advice (e.g., RICE or gentle movement)",
-  "followUpQuestion": "Ask an engaging question (e.g., 'Which of these feels most accurate to you?')"
-}`
-  : `
+  "immediateAdvice": "Brief immediate care advice (RICE protocol or similar) in 2-3 sentences. Make it conversational and actionable.",
+  "followUpQuestion": "A specific engaging question to ask the user (e.g., 'Which of these feels most like what you're experiencing?' or 'Would you like to learn more about any of these diagnoses?')"
+}
+
+Make IDs lowercase with hyphens (e.g., "ankle-sprain", "high-ankle-sprain").
+Make the tone warm, professional, and conversational - like a knowledgeable friend who cares.`
+    : `
 You are HealthBay, an AI rehabilitation assistant specializing in musculoskeletal injuries.
 
 User's injury information:
@@ -961,24 +920,36 @@ User's injury information:
 - Severity: ${severity || 'Unknown'}
 - Duration: ${duration || 'Not specified'}
 - Context: ${context || 'Not specified'}
-- Mechanism: ${mechanism || 'Not specified'}
-
-No relevant context was found in HealthBay’s knowledge base. Use your own reasoning based on general medical knowledge to suggest possible diagnoses.
+- Mechanism: ${mechanism || 'Not specified'}${pastInjuriesContext}
 
 Instructions:
-- Clearly mark the response as "AI-generated (no source match)".
-- Stay evidence-based and safe.
-- Be conversational, empathetic, and concise.
+- Provide evidence-based diagnosis suggestions
+- Maintain empathy and clarity in your tone
+- DO NOT include source citations in the descriptions
 
-Return ONLY a JSON object with the same structure as above.
-`;
+Return ONLY a JSON object with this exact structure:
+{
+  "summary": "2-3 sentence conversational acknowledgment. Show empathy for their situation. Explain what you're analyzing. Make it personal and engaging, not clinical. End with something encouraging or a question.",
+  "diagnoses": [
+    {
+      "id": "unique-id-1",
+      "name": "Diagnosis Name",
+      "confidence": "high|medium|low",
+      "shortDescription": "One sentence description",
+      "matchedSymptoms": ["symptom1", "symptom2"],
+      "typicalCauses": "Brief explanation of typical causes"
+    }
+  ],
+  "immediateAdvice": "Brief immediate care advice (RICE protocol or similar) in 2-3 sentences. Make it conversational and actionable.",
+  "followUpQuestion": "A specific engaging question to ask the user (e.g., 'Which of these feels most like what you're experiencing?' or 'Would you like to learn more about any of these diagnoses?')"
+}
 
+Make IDs lowercase with hyphens (e.g., "ankle-sprain", "high-ankle-sprain").
+Make the tone warm, professional, and conversational - like a knowledgeable friend who cares.`;
 
   const result = await model.generateContent(prompt);
   const responseText = result.response.text();
   
-  console.log("📚 RAG context used:", hasRelevantContext, "Coverage:", coverageScore.toFixed(2));
-
   let parsedDiagnoses;
   try {
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -1000,28 +971,17 @@ Return ONLY a JSON object with the same structure as above.
     ? `${parsedDiagnoses.summary}\n\n${parsedDiagnoses.followUpQuestion}`
     : parsedDiagnoses.summary;
   
-  const provenanceLabel = hasRelevantContext
-  ? "Based on verified clinical sources from HealthBay’s database."
-  : "⚠️ AI-generated (no source match).";
-
-// 🧩 Build source summary list if RAG was used
-  const sourceSummary = hasRelevantContext
-  ? ragResult.sources?.map((s, i) => `[${i + 1}] ${s.title} - ${s.source_url || "No link available"}`).join("\n")
-  : null;  
-
-return {
-  stage: "DIAGNOSIS_LIST",
-  type: "injury",
-  response: conversationalResponse,
-  diagnoses: parsedDiagnoses.diagnoses,
-  immediateAdvice: parsedDiagnoses.immediateAdvice,
-  currentDetails: details,
-  ragUsed: hasRelevantContext,
-  provenance: provenanceLabel,
-  sources: sourceSummary, // 🔹 add source links if available
-  nextAction: "select_diagnosis",
-  uiHint: "Show list of diagnoses as clickable cards. When user clicks, send diagnosisId in next request"
-};
+  return {
+    stage: "DIAGNOSIS_LIST",
+    type: "injury",
+    response: conversationalResponse,
+    diagnoses: parsedDiagnoses.diagnoses,
+    immediateAdvice: parsedDiagnoses.immediateAdvice,
+    currentDetails: details,
+    ragUsed: !!ragContext,
+    nextAction: "select_diagnosis",
+    uiHint: "Show list of diagnoses as clickable cards. When user clicks, send diagnosisId in next request"
+  };
 }
 
 /**
@@ -1229,7 +1189,6 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
     return {
       stage: "DIAGNOSTIC_TEST_STEP",
       type: "injury",
-      response: currentTest.steps[0], // Add response field for client
       testSession: {
         ...testSession,
         currentStepIndex: 0
@@ -1245,10 +1204,8 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
         safetyNote: currentTest.safetyNote
       },
       progress: {
-        currentTest: currentTestIndex + 1,
+        testNumber: currentTestIndex + 1,
         totalTests: testPlan.tests.length,
-        currentStep: 1,
-        totalSteps: totalSteps,
         percentage: Math.round(((currentTestIndex) / testPlan.tests.length) * 100)
       },
       nextAction: "complete_step",
@@ -1270,7 +1227,6 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
       return {
         stage: "DIAGNOSTIC_TEST_STEP",
         type: "injury",
-        response: currentTest.steps[nextStepIndex], // Add response field for client
         testSession: {
           ...testSession,
           currentStepIndex: nextStepIndex
@@ -1286,10 +1242,8 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
           safetyNote: currentTest.safetyNote
         },
         progress: {
-          currentTest: currentTestIndex + 1,
+          testNumber: currentTestIndex + 1,
           totalTests: testPlan.tests.length,
-          currentStep: nextStepIndex + 1,
-          totalSteps: totalSteps,
           percentage: Math.round(((currentTestIndex + (nextStepIndex / totalSteps)) / testPlan.tests.length) * 100)
         },
         nextAction: "complete_step",
@@ -1305,7 +1259,6 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
       return {
         stage: "DIAGNOSTIC_TEST_RESULT",
         type: "injury",
-        response: `You've completed the ${currentTest.name}. ${currentTest.whatToLookFor}\n\nDid you experience this during the test?`,
         testSession: testSession,
         currentTest: {
           id: currentTest.id,
@@ -1314,10 +1267,8 @@ async function handleDiagnosticTestResponse(testResponse, currentContext) {
         },
         question: `You've completed the ${currentTest.name}. ${currentTest.whatToLookFor}\n\nDid you experience this during the test?`,
         progress: {
-          currentTest: currentTestIndex + 1,
+          testNumber: currentTestIndex + 1,
           totalTests: testPlan.tests.length,
-          currentStep: totalSteps,
-          totalSteps: totalSteps,
           percentage: Math.round(((currentTestIndex + 1) / testPlan.tests.length) * 100)
         },
         nextAction: "submit_result",
@@ -1577,32 +1528,30 @@ User's message: "${message}"
 
 Provide:
 
-1. Possible Conditions (list of all possible diagnoses with confidence levels):
+1. **Possible Conditions** (list of all possible diagnoses with confidence levels):
    - List potential conditions with likelihood
    - Brief explanation
 
-2. Symptom Management:
+2. **Symptom Management**:
    - Home care recommendations
    - Over-the-counter remedies (if appropriate)
    - Comfort measures
 
-3. When to Seek Medical Care:
+3. **When to Seek Medical Care**:
    - Signs that require immediate attention
    - When to see a doctor within 24-48 hours
    - When self-care is appropriate
 
-4. General Advice:
+4. **General Advice**:
    - Rest, hydration, nutrition
    - What to avoid
    - Expected recovery timeline (if applicable)
 
-5. Note About HealthBay:
+5. **Note About HealthBay**:
    - Mention that HealthBay specializes in musculoskeletal injuries
    - Suggest seeing appropriate healthcare provider for this type of concern
 
-IMPORTANT: Include medical disclaimer and strongly encourage consulting healthcare provider for non-injury conditions.
-
-Use plain text formatting only - no bold (**) or other markdown formatting.`;
+**Important**: Include medical disclaimer and strongly encourage consulting healthcare provider for non-injury conditions.`;
 
   const result = await model.generateContent(prompt);
   const aiResponse = result.response.text();
