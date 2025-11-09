@@ -12,16 +12,14 @@ export default function AppNavigator() {
   return user ? (
     <Stack.Navigator>
       <Stack.Screen name="MainTabs" options={{ headerShown: false }}>
-        {(props) => <MainTabs {...props} setUser={setUser} />}
+        {(props) => <MainTabs {...props} />}
       </Stack.Screen>
-
       <Stack.Screen
         name="Chat"
         component={ChatScreen}
         options={{ headerShown: false }}
       />
     </Stack.Navigator>
-    <MainTabs />
   ) : (
     <AuthStack />
   );
