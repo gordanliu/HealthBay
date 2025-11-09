@@ -18,14 +18,11 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 export async function handleChat(req, res) {
   try {
     const { 
-      message, 
-      chatHistory = [], 
-      diagnosisId = null,
-      currentContext = {},
-      startDiagnosticTest = false,
-      testResponse = null,
-      exitDiagnosticTest = false,
-      selectedSymptoms = null  // New: for symptom checklist submission
+   message, chatHistory = [], currentContext = {},  diagnosisId = null,
+  startDiagnosticTest = false,
+  testResponse = null,
+  exitDiagnosticTest = false,
+  selectedSymptoms = null
     } = req.body;
     
     if (!message || typeof message !== 'string') {

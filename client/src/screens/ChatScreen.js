@@ -36,6 +36,7 @@ export default function ChatScreen() {
         currentContext: context,
       });
       const aiResponse = res.data.response || 'No response';
+      
       const newAiMsg = {
         role: 'assistant',
         text: aiResponse,
@@ -45,7 +46,7 @@ export default function ChatScreen() {
         }),
       };
       setMessages((prev) => [...prev, newAiMsg]);
-      setContext(res.data);
+      setContext(res.data.data);
     } catch (err) {
       setMessages((prev) => [
         ...prev,
