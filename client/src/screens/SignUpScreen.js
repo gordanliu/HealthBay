@@ -1,31 +1,42 @@
 import { useState, useContext } from 'react';
-import { View, TextInput, Button, StyleSheet, Alert } from 'react-native';
+import { View, TextInput, Button, StyleSheet, Alert, Platform, Text, TouchableOpacity } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
 import { AuthContext } from '../context/AuthContext';
 
-export default function SignUpScreen({ navigation,}) {
-  const { signup, setUser} = useContext(AuthContext);
+export default function SignUpScreen({ navigation }) {
+  const { signup, setUser } = useContext(AuthContext);
+
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
-  const [birthday, setBirthday] = useState('');
+  const [birthday, setBirthday] = useState(null); // store Date object
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [gender, setGender] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
 
   const handleSignUp = () => {
-    // simple validation (need more)
-    if (firstName && lastName && birthday && gender && username && password) {
-      signup(firstName, lastName, username, password, birthday, gender)
-        .then((data) => {
-          Alert.alert('Sign Up Successful', `Welcome, ${firstName}!`);
-          setUser(data.user);
-        })
-        .catch((error) => {
-          Alert.alert('Error', error.message || 'Sign Up Failed');
-        });
-    } else {
+    if (!firstName || !lastName || !birthday || !gender || !username || !password) {
       Alert.alert('Error', 'Please fill in all fields');
+      return;
     }
+
+    // Format birthday as YYYY-MM-DD
+    const formattedBirthday = birthday.toISOString().split('T')[0];
+
+    signup(firstName, lastName, username, password, formattedBirthday, gender)
+      .then((data) => {
+        Alert.alert('Sign Up Successful', `Welcome, ${firstName}!`);
+        setUser(data.user);
+      })
+      .catch((error) => {
+        Alert.alert('Error', error.message || 'Sign Up Failed');
+      });
+  };
+
+  const onChangeBirthday = (event, selectedDate) => {
+    setShowDatePicker(Platform.OS === 'ios'); // keep open on iOS
+    if (selectedDate) setBirthday(selectedDate);
   };
 
   return (
@@ -42,12 +53,23 @@ export default function SignUpScreen({ navigation,}) {
         value={lastName}
         onChangeText={setLastName}
       />
-      <TextInput
+
+      <TouchableOpacity
         style={styles.input}
-        placeholder="Birthday (MM/DD/YYYY)"
-        value={birthday}
-        onChangeText={setBirthday}
-      />
+        onPress={() => setShowDatePicker(true)}
+      >
+        <Text>{birthday ? birthday.toDateString() : 'Select Birthday'}</Text>
+      </TouchableOpacity>
+
+      {showDatePicker && (
+        <DateTimePicker
+          value={birthday || new Date()}
+          mode="date"
+          display="default"
+          maximumDate={new Date()} // can't pick future date
+          onChange={onChangeBirthday}
+        />
+      )}
 
       <View style={styles.pickerWrapper}>
         <Picker
@@ -55,9 +77,9 @@ export default function SignUpScreen({ navigation,}) {
           onValueChange={(itemValue) => setGender(itemValue)}
         >
           <Picker.Item label="Select Gender" value="" />
-          <Picker.Item label="Male" value="male" />
-          <Picker.Item label="Female" value="female" />
-          <Picker.Item label="Other" value="other" />
+          <Picker.Item label="Male" value="Male" />
+          <Picker.Item label="Female" value="Female" />
+          <Picker.Item label="Other" value="Other" />
         </Picker>
       </View>
 
@@ -85,25 +107,7 @@ export default function SignUpScreen({ navigation,}) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  input: {
-    width: '100%',
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-  },
-  pickerWrapper: {
-    width: '100%',
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    marginBottom: 16,
-  },
+  container: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
+  input: { width: '100%', borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12, marginBottom: 16, justifyContent: 'center' },
+  pickerWrapper: { width: '100%', borderWidth: 1, borderColor: '#ccc', borderRadius: 8, marginBottom: 16 },
 });

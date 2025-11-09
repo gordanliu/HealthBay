@@ -44,7 +44,15 @@ export function AuthProvider({ children }) {
 
   // Signup wrapper
   const signup = async (firstName, lastName, email, password, birthday, gender) => {
-    const age = new Date().getFullYear() - new Date(birthday).getFullYear();
+    const birthDate = new Date(birthday);
+    const today = new Date();
+
+    // Compute age correctly even if birthday hasn't occurred yet this year
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const m = today.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+      age--;
+    }
     const name = `${firstName.trim()} ${lastName.trim()}`;
     const data = await authService.signup(name, email, password, age, gender);
     if (data.user) {
