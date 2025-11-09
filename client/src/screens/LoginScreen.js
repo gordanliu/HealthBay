@@ -13,21 +13,25 @@ import {
 
 export default function LoginScreen({ navigation}) {
   const { login, setUser } = useContext(AuthContext);
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
   const handleLogin = () => {
-    if (username && password) {
-      login(username, password).then((data) => {
+    if (email && password) {
+      if(!/\S+@\S+\.\S+/.test(email)) {
+        Alert.alert('Error', 'Please enter a valid email address');
+        return;
+      }
+      login(email, password).then((data) => {
         if (data.user) {
           Alert.alert(`Welcome back, ${data.user.user_metadata.name}!`);
           setUser(data.user);
         } 
       }).catch(() => {
-        Alert.alert('Error', 'Invalid username or password');
+        Alert.alert('Error', 'Invalid email or password');
       });
     } else {
-      Alert.alert('Error', 'Please enter both username and password');
+      Alert.alert('Error', 'Please enter both email and password');
     }
   };
 
@@ -36,14 +40,14 @@ export default function LoginScreen({ navigation}) {
       <Text style={styles.welcome}>Welcome to HealthBay</Text>
 
       <Text style={styles.instruction}>
-        Please login with your username and password!
+        Please login with your email and password!
       </Text>
 
       <TextInput
         style={styles.input}
-        placeholder="Username"
-        value={username}
-        onChangeText={setUsername}
+        placeholder="Email"
+        value={email}
+        onChangeText={setEmail}
         autoCapitalize="none"
       />
 

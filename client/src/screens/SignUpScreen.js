@@ -1,5 +1,5 @@
 import { useState, useContext } from 'react';
-import { View, TextInput, Button, StyleSheet, Alert, Platform, Text, TouchableOpacity } from 'react-native';
+import { View, TextInput, Text, Button, StyleSheet, Alert, TouchableOpacity, Platform } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
 import { AuthContext } from '../context/AuthContext';
@@ -9,22 +9,31 @@ export default function SignUpScreen({ navigation }) {
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
-  const [birthday, setBirthday] = useState(null); // store Date object
+  const [birthday, setBirthday] = useState(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [gender, setGender] = useState('');
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
   const handleSignUp = () => {
-    if (!firstName || !lastName || !birthday || !gender || !username || !password) {
+    if (!firstName || !lastName || !birthday || !gender || !email || !password) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
 
-    // Format birthday as YYYY-MM-DD
+    if(password.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters long');
+      return;
+    }
+
+    if(!/\S+@\S+\.\S+/.test(email)) {
+      Alert.alert('Error', 'Please enter a valid email address');
+      return;
+    }
+
     const formattedBirthday = birthday.toISOString().split('T')[0];
 
-    signup(firstName, lastName, username, password, formattedBirthday, gender)
+    signup(firstName, lastName, email, password, formattedBirthday, gender)
       .then((data) => {
         Alert.alert('Sign Up Successful', `Welcome, ${firstName}!`);
         setUser(data.user);
@@ -41,23 +50,10 @@ export default function SignUpScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      <TextInput
-        style={styles.input}
-        placeholder="First Name"
-        value={firstName}
-        onChangeText={setFirstName}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Last Name"
-        value={lastName}
-        onChangeText={setLastName}
-      />
+      <TextInput style={styles.input} placeholder="First Name" value={firstName} onChangeText={setFirstName} />
+      <TextInput style={styles.input} placeholder="Last Name" value={lastName} onChangeText={setLastName} />
 
-      <TouchableOpacity
-        style={styles.input}
-        onPress={() => setShowDatePicker(true)}
-      >
+      <TouchableOpacity style={styles.input} onPress={() => setShowDatePicker(true)}>
         <Text>{birthday ? birthday.toDateString() : 'Select Birthday'}</Text>
       </TouchableOpacity>
 
@@ -66,16 +62,13 @@ export default function SignUpScreen({ navigation }) {
           value={birthday || new Date()}
           mode="date"
           display="default"
-          maximumDate={new Date()} // can't pick future date
+          maximumDate={new Date()}
           onChange={onChangeBirthday}
         />
       )}
 
       <View style={styles.pickerWrapper}>
-        <Picker
-          selectedValue={gender}
-          onValueChange={(itemValue) => setGender(itemValue)}
-        >
+        <Picker selectedValue={gender} onValueChange={setGender}>
           <Picker.Item label="Select Gender" value="" />
           <Picker.Item label="Male" value="Male" />
           <Picker.Item label="Female" value="Female" />
@@ -83,25 +76,20 @@ export default function SignUpScreen({ navigation }) {
         </Picker>
       </View>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Username"
-        value={username}
-        onChangeText={setUsername}
-        autoCapitalize="none"
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-      />
+      <TextInput style={styles.input} placeholder="Email" value={email} onChangeText={setEmail} autoCapitalize="none" />
+      <TextInput style={styles.input} placeholder="Password" value={password} onChangeText={setPassword} secureTextEntry />
 
       <View style={{ width: '100%', marginBottom: 16 }}>
         <Button title="Create Account" onPress={handleSignUp} />
       </View>
-      <Button title="Back to Login" onPress={() => navigation.goBack()} />
+
+      {/* Back to Login as text link */}
+      <View style={styles.loginContainer}>
+        <Text style={styles.loginText}>Already have an account?</Text>
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Text style={styles.loginLink}> Log In</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -110,4 +98,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
   input: { width: '100%', borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12, marginBottom: 16, justifyContent: 'center' },
   pickerWrapper: { width: '100%', borderWidth: 1, borderColor: '#ccc', borderRadius: 8, marginBottom: 16 },
+  loginContainer: { flexDirection: 'row', marginTop: 10 },
+  loginText: { fontSize: 14, color: '#333' },
+  loginLink: { fontSize: 14, color: '#0b84ff', fontWeight: 'bold' },
 });
