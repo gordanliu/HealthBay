@@ -1,6 +1,7 @@
 // server/src/controllers/chatController.js
 import { queryRAG } from "../services/ragService.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { supabase } from "../config/db.js";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
@@ -134,6 +135,84 @@ export async function handleChat(req, res) {
     // Console log the full response for testing
     console.log("🤖 AI Response:", JSON.stringify(response, null, 2));
     
+
+    // --- 💾 Persist chat + messages ---
+try {
+  const userId = req.user?.id || "00000000-0000-0000-0000-000000000000"; // temp anon user
+  const aiText = response?.response || response?.diagnosisDetail?.overview || "No AI response";
+  const aiMetadata = {
+    stage: response?.stage || "unknown",
+    type: response?.type || "unknown",
+    ragUsed: response?.ragUsed || false,
+    coverageScore: response?.coverageScore || 0,
+    provenance: response?.provenance || "unknown",
+  };
+
+  // 1️⃣ Get or create active chat for this user
+  let { data: activeChat, error: chatErr } = await supabase
+    .from("chats")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (chatErr) console.error("⚠️ Chat lookup error:", chatErr);
+
+  if (!activeChat) {
+    const { data: newChat, error: newChatErr } = await supabase
+      .from("chats")
+      .insert({
+        user_id: userId,
+        title:
+          response?.currentDetails?.injury_name ||
+          "New Consultation",
+        context_summary: message.slice(0, 120),
+        status: "active",
+      })
+      .select()
+      .single();
+
+    if (newChatErr) console.error("❌ Chat creation failed:", newChatErr);
+    activeChat = newChat;
+  }
+
+  // 2️⃣ Insert user + AI messages
+  const { error: msgError } = await supabase.from("messages").insert([
+    {
+      chat_id: activeChat.id,
+      sender: "user",
+      text: message,
+    },
+    {
+      chat_id: activeChat.id,
+      sender: "ai",
+      text: aiText,
+      metadata: aiMetadata,
+      source_docs: response?.sources || [],
+    },
+  ]);
+
+  if (msgError) console.error("❌ Message insert error:", msgError);
+
+  // 3️⃣ Update chat summary + last activity
+  await supabase
+    .from("chats")
+    .update({
+      last_activity: new Date().toISOString(),
+      context_summary: message.slice(0, 120),
+      title:
+        response?.currentDetails?.injury_name ||
+        activeChat.title ||
+        "Consultation",
+    })
+    .eq("id", activeChat.id);
+
+  console.log(`💾 Saved messages for chat ${activeChat.id}`);
+} catch (persistErr) {
+  console.error("💥 Chat persistence failed:", persistErr);
+}
+
+
     res.json({
       success: true,
       data: response,

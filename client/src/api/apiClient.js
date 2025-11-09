@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 // Android emulator -> host machine localhost
-const API_BASE_URL = 'http://10.0.2.2:3000/api';
+const API_BASE_URL = 'https://nonfactually-twentypenny-elizbeth.ngrok-free.dev/api';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
