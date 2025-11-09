@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import { useState, useContext } from 'react';
 import { View, TextInput, Button, StyleSheet, Alert } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
+import { AuthContext } from '../context/AuthContext';
 
-export default function SignUpScreen({ navigation, setUser }) {
+export default function SignUpScreen({ navigation,}) {
+  const { signup, setUser} = useContext(AuthContext);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [birthday, setBirthday] = useState('');
@@ -13,8 +15,14 @@ export default function SignUpScreen({ navigation, setUser }) {
   const handleSignUp = () => {
     // simple validation (need more)
     if (firstName && lastName && birthday && gender && username && password) {
-      setUser({ name: username, firstName, lastName }); // logs in user immediately
-      Alert.alert('Sign Up Successful', `Welcome, ${firstName}!`);
+      signup(firstName, lastName, username, password, birthday, gender)
+        .then((data) => {
+          Alert.alert('Sign Up Successful', `Welcome, ${firstName}!`);
+          setUser(data.user);
+        })
+        .catch((error) => {
+          Alert.alert('Error', error.message || 'Sign Up Failed');
+        });
     } else {
       Alert.alert('Error', 'Please fill in all fields');
     }

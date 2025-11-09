@@ -1,10 +1,13 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { AuthContext } from '../context/AuthContext';
+import { useContext } from 'react';
 import LoginScreen from '../screens/LoginScreen';
 import SignUpScreen from '../screens/SignUpScreen';
 
 const Stack = createNativeStackNavigator();
 
-export default function AuthStack({ setUser }) {
+export default function AuthStack() {
+  const { setUser } = useContext(AuthContext);
   return (
     <Stack.Navigator>
       {/* Login Screen — pass setUser manually */}

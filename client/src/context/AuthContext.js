@@ -1,6 +1,6 @@
 import React, { createContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { authService } from "../api/authService";
+import { authService } from "../api/authApi";
 
 export const AuthContext = createContext();
 
@@ -43,8 +43,10 @@ export function AuthProvider({ children }) {
   };
 
   // Signup wrapper
-  const signup = async (firstName, lastName, email, password, age, gender) => {
-    const data = await authService.signup(firstName, lastName, email, password, age, gender);
+  const signup = async (firstName, lastName, email, password, birthday, gender) => {
+    const age = new Date().getFullYear() - new Date(birthday).getFullYear();
+    const name = `${firstName.trim()} ${lastName.trim()}`;
+    const data = await authService.signup(name, email, password, age, gender);
     if (data.user) {
       setUser(data.user);
       setIsLoggedIn(true);

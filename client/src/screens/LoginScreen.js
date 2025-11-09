@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import { useState, useContext } from 'react';
+import { AuthContext } from '../context/AuthContext';
 
 import {
   Text,
@@ -10,14 +11,21 @@ import {
   TouchableOpacity,
 } from 'react-native';
 
-export default function LoginScreen({ navigation, setUser }) {
+export default function LoginScreen({ navigation}) {
+  const { login, setUser } = useContext(AuthContext);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
 
   const handleLogin = () => {
     if (username && password) {
-      setUser({ name: username });
-      Alert.alert(`Welcome back, ${username}!`);
+      login(username, password).then((data) => {
+        if (data.user) {
+          Alert.alert(`Welcome back, ${data.user.user_metadata.name}!`);
+          setUser(data.user);
+        } 
+      }).catch(() => {
+        Alert.alert('Error', 'Invalid username or password');
+      });
     } else {
       Alert.alert('Error', 'Please enter both username and password');
     }

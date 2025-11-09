@@ -3,10 +3,14 @@ import { Ionicons } from '@expo/vector-icons';
 import HomeScreen from '../screens/HomeScreen';
 import HistoryScreen from '../screens/HistoryScreen';
 import ProfileScreen from '../screens/ProfileScreen';
+import { AuthContext } from '../context/AuthContext';
+import { useContext } from 'react';
 
 const Tab = createBottomTabNavigator();
 
-export default function MainTabs({ setUser }) {
+export default function MainTabs() {
+  const { setUser } = useContext(AuthContext);
+  
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({

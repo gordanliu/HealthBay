@@ -1,9 +1,8 @@
 import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { authService } from "./authService";
-import "dotenv/config";
+import { authService } from "./authApi";
 
-const API_BASE_URL = process.env.API_BASE_URL || "http://localhost:8080/api"; // replace with your backend URL
+const API_BASE_URL = "http://172.31.143.126:3000/api"; // replace with your backend URL
 
 const api = axios.create({
   baseURL: API_BASE_URL,
