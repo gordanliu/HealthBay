@@ -3,7 +3,7 @@ import { queryRAG } from "../services/ragService.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
 
 /**
  * Main chat handler - supports multi-step conversational flow
@@ -18,11 +18,14 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 export async function handleChat(req, res) {
   try {
     const { 
-   message, chatHistory = [], currentContext = {},  diagnosisId = null,
-  startDiagnosticTest = false,
-  testResponse = null,
-  exitDiagnosticTest = false,
-  selectedSymptoms = null
+      message, 
+      chatHistory = [], 
+      diagnosisId = null,
+      currentContext = {},
+      startDiagnosticTest = false,
+      testResponse = null,
+      exitDiagnosticTest = false,
+      selectedSymptoms = null  // New: for symptom checklist submission
     } = req.body;
     
     if (!message || typeof message !== 'string') {
@@ -61,7 +64,12 @@ export async function handleChat(req, res) {
     // If diagnosisId is provided, user clicked on a diagnosis - show detailed info
     else if (diagnosisId) {
       response = await handleDiagnosisDetail(diagnosisId, currentContext, message);
-    } else {
+    }
+    // If we have ongoing context, handle as conversational follow-up
+    else if (currentContext.currentDetails && Object.keys(currentContext.currentDetails).length > 0) {
+      response = await handleConversationalFollowUp(message, currentContext, chatHistory);
+    }
+    else {
       // Step 1: Classify the input type (injury vs general health)
       const classification = await classifyInput(message, chatHistory);
       console.log("📊 Classification:", classification.type);
@@ -183,7 +191,7 @@ async function gatherMissingInfo(message, details, missingInfo) {
   }
   
   // For other missing info, ask conversational questions
-  const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has reported an injury, but we need more details.
+  const prompt = `You are HealthBay (MedBay), an empathetic and conversational AI rehabilitation assistant. The user has reported an injury, but we need more details to help them properly.
 
 User's current information:
 - Injury: ${details.injury_name || 'Unknown'}
@@ -198,15 +206,15 @@ User's message: "${message}"
 
 Missing information: ${missingInfo.join(', ')}
 
-Generate 2-4 specific questions to gather the missing information. Be conversational and empathetic.
-Ask about the most critical missing information first (mechanism, duration, severity).
+Create a dynamic, conversational response that:
+1. Acknowledges what they've shared with empathy
+2. Explains why you need more details (to give them the best guidance)
+3. Asks 2-3 specific questions about the missing information
+4. Uses a warm, professional tone - like talking to a friend who's also a healthcare professional
+5. Ends with an engaging question that prompts them to respond
 
-Format your response as a friendly message that:
-1. Acknowledges what they've told you
-2. Explains you need a bit more detail to provide accurate guidance
-3. Asks the specific questions
-
-Keep it concise and natural.`;
+Make it feel like a natural conversation, NOT a form to fill out.
+Be encouraging and supportive about their recovery journey.`;
 
   const result = await model.generateContent(prompt);
   const aiResponse = result.response.text();
@@ -229,14 +237,14 @@ async function getSymptomChecklist(message, details, missingInfo) {
   const bodyPart = details.body_part?.toLowerCase() || 'general';
   
   // Get AI to generate relevant symptoms for the specific body part
-  const prompt = `You are HealthBay. The user has an injury to their ${bodyPart}.
+  const prompt = `You are HealthBay (MedBay), an empathetic AI rehabilitation assistant. The user has an injury to their ${bodyPart}.
 
 Generate a comprehensive list of common symptoms for ${bodyPart} injuries that a user might experience.
 Include both common and less common symptoms to ensure comprehensive diagnosis.
 
 Return ONLY a JSON object with this structure:
 {
-  "message": "Brief empathetic message (1-2 sentences) asking them to check off their symptoms",
+  "message": "Brief empathetic message (2-3 sentences) asking them to check off their symptoms. Make it conversational and encouraging, not clinical. End with a question or prompt for engagement.",
   "symptomCategories": {
     "pain": {
       "label": "Pain Characteristics",
@@ -261,7 +269,8 @@ Return ONLY a JSON object with this structure:
   }
 }
 
-Customize the symptoms to be specific and relevant for ${bodyPart} injuries.`;
+Customize the symptoms to be specific and relevant for ${bodyPart} injuries.
+Make the message warm and supportive, like talking to a caring professional.`;
 
   const result = await model.generateContent(prompt);
   const responseText = result.response.text();
@@ -275,7 +284,7 @@ Customize the symptoms to be specific and relevant for ${bodyPart} injuries.`;
   } catch (e) {
     // Fallback to generic symptoms
     symptomData = {
-      message: `I'd like to understand your symptoms better. Please check all that apply to your ${bodyPart} injury:`,
+      message: `I want to make sure I understand exactly what you're experiencing with your ${bodyPart} injury. Could you check off all the symptoms that apply to you? This will help me give you the most accurate guidance possible.`,
       symptomCategories: {
         pain: {
           label: "Pain Characteristics",
@@ -309,6 +318,76 @@ Customize the symptoms to be specific and relevant for ${bodyPart} injuries.`;
     uiHint: "Show checkbox list organized by categories with 'Other' text input field at bottom",
     hasOtherOption: true,
     otherLabel: "Other symptoms not listed:"
+  };
+}
+
+/**
+ * Handle conversational follow-up messages during the assessment
+ */
+async function handleConversationalFollowUp(message, currentContext, chatHistory) {
+  const details = currentContext.currentDetails || {};
+  
+  // Check for concerning or inappropriate statements
+  const lowerMessage = message.toLowerCase();
+  const concerningPhrases = [
+    'cut', 'amputate', 'remove', 'kill myself', 'end it', 'suicide',
+    'don\'t care', 'doesn\'t matter', 'give up', 'hopeless'
+  ];
+  
+  const hasHarmfulIntent = concerningPhrases.some(phrase => lowerMessage.includes(phrase));
+  
+  const prompt = `You are HealthBay (MedBay), a conversational AI rehab assistant. This is an ONGOING conversation about their ${details.body_part || 'injury'}.
+
+They already know:
+- Their diagnosis options
+- Basic symptoms
+- Initial advice
+
+User just said: "${message}"
+
+${hasHarmfulIntent ? `
+⚠️ CRITICAL: They mentioned self-harm or extreme measures.
+Respond with:
+- Immediate empathy and concern (1-2 sentences)
+- Clear statement this is NOT appropriate
+- Direct recommendation to seek professional help NOW
+- Crisis resources if needed
+Keep it brief but urgent.
+` : `
+Guidelines for natural conversation:
+- Keep responses SHORT (1-3 sentences max unless they ask for detail)
+- Answer their SPECIFIC question directly, don't repeat everything
+- Sound like a real person texting, not giving a medical lecture
+- If they're just chatting/checking in, match their energy
+- Only provide detailed info if they explicitly ask for it
+- End with a SHORT question (5-8 words) to keep dialogue going
+- Don't repeat advice you've already given
+- Be casual but professional - like a knowledgeable friend
+`}
+
+Examples of good conversational responses:
+- User: "Does it usually swell a lot?" → You: "Yeah, swelling is super common with ${details.body_part || 'this type of'} injuries, especially in the first few days. Ice will help bring it down. Is the swelling getting worse or staying about the same?"
+- User: "How long till I can play again?" → You: "Most people are back to playing in 4-6 weeks if they follow the treatment plan consistently. What sport are you itching to get back to?"
+- User: "This sucks" → You: "I know, injuries are frustrating. The good news is you caught it early. How's the pain level today?"
+
+CRITICAL:
+- NO bullet points or numbered lists unless they ask for a plan
+- NO long paragraphs - be conversational and concise
+- Match their communication style
+- If they're brief, you be brief
+- Only elaborate when asked`;
+
+  const result = await model.generateContent(prompt);
+  const aiResponse = result.response.text();
+  
+  return {
+    stage: "CONVERSATIONAL",
+    type: "injury",
+    response: aiResponse,
+    currentDetails: details,
+    concernFlagged: hasHarmfulIntent,
+    nextAction: "continue_conversation",
+    uiHint: "Show response with text input for user to continue conversation"
   };
 }
 
@@ -353,7 +432,7 @@ async function generateDiagnosisList(message, details, chatHistory) {
     ragContext = null;
   }
   
-  const prompt = `You are HealthBay, an AI rehabilitation assistant specializing in musculoskeletal injuries.
+  const prompt = `You are HealthBay (MedBay), a conversational and empathetic AI rehabilitation assistant specializing in musculoskeletal injuries.
 
 User's injury information:
 - Injury: ${injury_name || 'Unknown'}
@@ -371,7 +450,7 @@ Generate a list of 2-4 possible diagnoses based on the information provided.
 
 Return ONLY a JSON object with this exact structure:
 {
-  "summary": "Brief 1-2 sentence acknowledgment of their injury and what you're analyzing",
+  "summary": "2-3 sentence conversational acknowledgment. Show empathy for their situation. Explain what you're analyzing. Make it personal and engaging, not clinical. End with something encouraging or a question.",
   "diagnoses": [
     {
       "id": "unique-id-1",
@@ -382,10 +461,12 @@ Return ONLY a JSON object with this exact structure:
       "typicalCauses": "Brief explanation of typical causes"
     }
   ],
-  "immediateAdvice": "Brief immediate care advice (RICE protocol or similar) in 1-2 sentences"
+  "immediateAdvice": "Brief immediate care advice (RICE protocol or similar) in 2-3 sentences. Make it conversational and actionable.",
+  "followUpQuestion": "A specific engaging question to ask the user (e.g., 'Which of these feels most like what you're experiencing?' or 'Would you like to learn more about any of these diagnoses?')"
 }
 
-Make IDs lowercase with hyphens (e.g., "ankle-sprain", "high-ankle-sprain").`;
+Make IDs lowercase with hyphens (e.g., "ankle-sprain", "high-ankle-sprain").
+Make the tone warm, professional, and conversational - like a knowledgeable friend who cares.`;
 
   const result = await model.generateContent(prompt);
   const responseText = result.response.text();
@@ -399,16 +480,22 @@ Make IDs lowercase with hyphens (e.g., "ankle-sprain", "high-ankle-sprain").`;
   } catch (e) {
     console.warn("Failed to parse diagnoses JSON, using fallback");
     parsedDiagnoses = {
-      summary: "Based on your symptoms, here are the possible conditions:",
+      summary: "Based on your symptoms, here are the possible conditions I've identified. Let's work together to figure out what's going on.",
       diagnoses: [],
-      immediateAdvice: "Apply ice and rest the affected area."
+      immediateAdvice: "For now, apply ice and rest the affected area. This will help reduce any inflammation.",
+      followUpQuestion: "Which of these diagnoses sounds most like what you're experiencing?"
     };
   }
+  
+  // Combine summary and follow-up question for conversational response
+  const conversationalResponse = parsedDiagnoses.followUpQuestion 
+    ? `${parsedDiagnoses.summary}\n\n${parsedDiagnoses.followUpQuestion}`
+    : parsedDiagnoses.summary;
   
   return {
     stage: "DIAGNOSIS_LIST",
     type: "injury",
-    response: parsedDiagnoses.summary,
+    response: conversationalResponse,
     diagnoses: parsedDiagnoses.diagnoses,
     immediateAdvice: parsedDiagnoses.immediateAdvice,
     currentDetails: details,
@@ -436,6 +523,13 @@ User's Context:
 
 User's message: "${userMessage}"
 
+CRITICAL TREATMENT GUIDELINES:
+- ONLY recommend treatments that can be done by the patient themselves at home
+- Self-care treatments include: RICE protocol, over-the-counter pain medication, stretching, strengthening exercises, ice/heat therapy, compression, elevation, rest, bracing/taping
+- For treatments requiring medical professionals (injections, surgery, prescription medications, imaging, manual therapy by professionals), clearly state "Consult a doctor for professional medical treatment"
+- Never recommend specific prescription medications, injections, or surgical procedures as self-care
+- Always emphasize when professional medical evaluation is needed
+
 Provide comprehensive information about this diagnosis. Return ONLY a JSON object:
 
 {
@@ -449,22 +543,23 @@ Provide comprehensive information about this diagnosis. Return ONLY a JSON objec
     "chronic": "Weeks 3+: Description of return to activity"
   },
   "treatmentPlan": {
-    "immediate": ["List of immediate actions - RICE protocol"],
-    "ongoing": ["List of ongoing treatments and exercises"],
-    "rehabilitation": ["List of rehab exercises and progressions"]
+    "immediate": ["ONLY self-care actions like RICE protocol, OTC pain relief"],
+    "ongoing": ["ONLY at-home treatments: exercises, stretches, ice/heat, compression"],
+    "rehabilitation": ["ONLY self-guided exercises and progressions"],
+    "requiresProfessional": ["List treatments requiring doctor: injections, imaging, prescription meds, surgery, physical therapy"]
   },
   "diagnosticTests": [
     {
       "name": "Test name (e.g., 'Anterior Drawer Test')",
-      "description": "How to perform this test",
+      "description": "How to perform this test at home",
       "positiveIndicator": "What indicates a positive test"
     }
   ],
   "redFlags": ["List of symptoms requiring immediate medical attention"],
   "whenToSeeDoctorImmediate": ["Situations requiring immediate medical care"],
   "whenToSeeDoctor24_48hrs": ["Situations to see doctor within 24-48 hours"],
-  "selfCareAppropriate": "When self-care is appropriate",
-  "estimatedRecoveryTime": "e.g., '4-6 weeks for moderate cases'",
+  "selfCareAppropriate": "When self-care is appropriate vs when to see a doctor",
+  "estimatedRecoveryTime": "e.g., '4-6 weeks for moderate cases with proper self-care'",
   "returnToActivityGuidelines": "Guidelines for when to return to sports/activities"
 }`;
 
@@ -808,6 +903,13 @@ User Context:
 Test Results:
 ${resultsString}
 
+CRITICAL TREATMENT GUIDELINES:
+- ONLY recommend treatments that can be done by the patient themselves at home
+- Self-care treatments include: RICE protocol, over-the-counter pain medication, stretching, strengthening exercises, ice/heat therapy, compression, elevation, rest, bracing/taping
+- For treatments requiring medical professionals (injections, surgery, prescription medications, imaging, manual therapy by professionals), clearly state: "For [treatment name], consult a doctor for professional medical treatment"
+- Never recommend specific prescription medications, injections, or surgical procedures as self-care
+- Always emphasize when professional medical evaluation is needed based on test results
+
 Based on these test results, provide a comprehensive refined assessment. Return ONLY a JSON object:
 {
   "confidenceLevel": "high|medium|low",
@@ -825,14 +927,15 @@ Based on these test results, provide a comprehensive refined assessment. Return 
     "Modified recommendation due to test findings"
   ],
   "refinedTreatmentPlan": {
-    "immediate": ["Immediate actions based on test results"],
-    "week1": ["Week 1 treatments adjusted for severity"],
-    "week2_3": ["Week 2-3 treatments"],
-    "ongoing": ["Long-term rehabilitation"]
+    "immediate": ["ONLY self-care: RICE protocol, OTC pain relief based on test results"],
+    "week1": ["ONLY at-home treatments: exercises, ice/heat, compression adjusted for severity"],
+    "week2_3": ["ONLY self-guided exercises and progressions"],
+    "ongoing": ["ONLY at-home long-term rehabilitation"],
+    "requiresProfessional": ["If test results indicate need for: injections, imaging, prescription meds, physical therapy, surgery - list here"]
   },
-  "nextSteps": "What the user should do next (continue with treatment plan, see doctor, etc.)",
-  "redFlags": ["Any concerning findings from the tests"],
-  "estimatedRecovery": "Updated recovery timeline based on test severity",
+  "nextSteps": "What the user should do next (continue with treatment plan, see doctor if test results concerning, etc.)",
+  "redFlags": ["Any concerning findings from the tests that warrant professional evaluation"],
+  "estimatedRecovery": "Updated recovery timeline based on test severity with self-care",
   "confidenceImprovement": "How the tests improved diagnostic confidence (e.g., '85% confident vs 70% before')"
 }`;
 
@@ -964,19 +1067,20 @@ Provide:
  * Handle general/off-topic queries
  */
 async function handleGeneralQuery(message, chatHistory) {
-  const prompt = `You are HealthBay, an AI assistant specializing in musculoskeletal injury rehabilitation and recovery.
+  const prompt = `You are HealthBay (MedBay), a friendly and conversational AI assistant specializing in musculoskeletal injury rehabilitation and recovery.
 
 The user said: "${message}"
 
 This doesn't appear to be about musculoskeletal injuries or health conditions. 
 
-Provide a brief, helpful response that:
-1. Acknowledges their message
-2. Politely redirects them to ask about injuries, sprains, strains, joint pain, or rehabilitation
-3. Give examples of what you can help with
-4. Maintain a friendly, supportive tone
+Provide a warm, conversational response that:
+1. Acknowledges their message with personality
+2. Gently redirects them to topics you can help with (injuries, sprains, strains, joint pain, rehabilitation, sports injuries, recovery plans)
+3. Give 2-3 specific examples of what you can help with
+4. Maintain a friendly, approachable tone - like a helpful friend
+5. End with a question asking if they have any injury or pain concerns you can help with
 
-Keep it concise (2-3 sentences).`;
+Make it engaging and conversational, not robotic. Show some personality while remaining professional.`;
 
   const result = await model.generateContent(prompt);
   const aiResponse = result.response.text();
