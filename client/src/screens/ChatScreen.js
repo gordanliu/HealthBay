@@ -1,14 +1,21 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { View, ScrollView, StyleSheet, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { useRoute } from '@react-navigation/native';
 import ChatBubble from '../components/ChatBubble';
 import ChatInput from '../components/ChatInput';
 import SymptomChecklist from '../components/SymptomChecklist';
 import DiagnosisList from '../components/DiagnosisList';
 import DiagnosisDetail from '../components/DiagnosisDetail';
 import { sendChatMessage } from '../api/chatApi';
+import { getChatMessages } from '../api/chatHistoryApi';
 
 export default function ChatScreen() {
-  const [messages, setMessages] = useState([
+  const route = useRoute();
+  const chatId = route.params?.chatId || null;
+  const isNewChat = route.params?.isNewChat || false;
+  
+  // Only show welcome message for new chats, not when loading existing chat
+  const [messages, setMessages] = useState(chatId ? [] : [
     {
       role: 'assistant',
       text: "Hello! I'm your health assistant. Please describe your symptoms, and I'll help you understand what might be happening.",
@@ -17,6 +24,8 @@ export default function ChatScreen() {
   ]);
   const [input, setInput] = useState('');
   const [context, setContext] = useState({});
+  const [currentChatId, setCurrentChatId] = useState(chatId);
+  const [isNewConsultation, setIsNewConsultation] = useState(isNewChat);
   const [showSymptomChecklist, setShowSymptomChecklist] = useState(false);
   const [symptomChecklistData, setSymptomChecklistData] = useState(null);
   const [showDiagnosisList, setShowDiagnosisList] = useState(false);
@@ -28,6 +37,107 @@ export default function ChatScreen() {
   const [showTestResults, setShowTestResults] = useState(false);
   const [testResultsData, setTestResultsData] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingChat, setLoadingChat] = useState(!!chatId);
+
+  // Load existing chat messages if chatId is provided
+  useEffect(() => {
+    if (chatId) {
+      loadChatMessages(chatId);
+      setIsNewConsultation(false);
+    } else if (isNewChat) {
+      // Reset state for new chat
+      setMessages([{
+        role: 'assistant',
+        text: "Hello! I'm your health assistant. Please describe your symptoms, and I'll help you understand what might be happening.",
+        time: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      }]);
+      setContext({});
+      setCurrentChatId(null);
+      setIsNewConsultation(true);
+      setShowSymptomChecklist(false);
+      setShowDiagnosisList(false);
+      setShowDiagnosisDetail(false);
+      setShowDiagnosticTest(false);
+      setShowTestResults(false);
+    }
+  }, [chatId, isNewChat]);
+
+  const loadChatMessages = async (id) => {
+    try {
+      setLoadingChat(true);
+      const res = await getChatMessages(id);
+      if (res.success && res.data && res.data.length > 0) {
+        // Convert database messages to chat format
+        const chatMessages = res.data.map(msg => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          text: msg.text,
+          time: new Date(msg.timestamp).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          provenance: msg.metadata?.provenance || null,
+          sources: msg.source_docs 
+            ? (Array.isArray(msg.source_docs) 
+                ? msg.source_docs.map(s => {
+                    if (typeof s === 'string') return s;
+                    if (s && typeof s === 'object' && s.text) return s.text;
+                    if (s && typeof s === 'object') return JSON.stringify(s);
+                    return String(s);
+                  })
+                : typeof msg.source_docs === 'string'
+                ? [msg.source_docs]
+                : [JSON.stringify(msg.source_docs)])
+            : [],
+          ragUsed: msg.metadata?.ragUsed || false,
+        }));
+        
+        setMessages(chatMessages);
+        
+        // Restore context from the last AI message's metadata if available
+        const lastAiMsg = res.data.slice().reverse().find(msg => msg.sender === 'ai');
+        if (lastAiMsg && lastAiMsg.metadata) {
+          // Reconstruct context from metadata
+          const restoredContext = {
+            stage: lastAiMsg.metadata.stage || 'CONVERSATIONAL',
+            diagnosisId: lastAiMsg.metadata.diagnosisId || null,
+            diagnosisName: lastAiMsg.metadata.diagnosisName || null,
+            currentDetails: lastAiMsg.metadata.currentDetails || {},
+            diagnosisDetail: lastAiMsg.metadata.diagnosisDetail || null,
+            testSession: lastAiMsg.metadata.testSession || null,
+            analysis: lastAiMsg.metadata.analysis || null,
+            testResults: lastAiMsg.metadata.testResults || null,
+            refinedTreatmentPlan: lastAiMsg.metadata.refinedTreatmentPlan || null,
+            // Preserve other metadata fields
+            ragUsed: lastAiMsg.metadata.ragUsed || false,
+            provenance: lastAiMsg.metadata.provenance || null,
+          };
+          setContext(restoredContext);
+          console.log('✅ Restored context from chat:', restoredContext);
+        }
+        setCurrentChatId(id);
+      } else if (res.success && res.data && res.data.length === 0) {
+        // Chat exists but has no messages - show welcome message
+        setMessages([{
+          role: 'assistant',
+          text: "Hello! I'm your health assistant. Please describe your symptoms, and I'll help you understand what might be happening.",
+          time: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+        }]);
+        setCurrentChatId(id);
+      }
+    } catch (err) {
+      console.error('❌ Error loading chat messages:', err);
+      // On error, still set the chatId so new messages can be saved
+      setCurrentChatId(id);
+    } finally {
+      setLoadingChat(false);
+    }
+  };
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -53,7 +163,14 @@ export default function ChatScreen() {
         message: userMessage,
         chatHistory: messages,
         currentContext: context,
+        chatId: currentChatId, // Include chatId to continue existing chat
+        startNewChat: isNewConsultation && !currentChatId, // Start new chat if this is a new consultation
       });
+      
+      // After first message, this is no longer a new consultation
+      if (isNewConsultation) {
+        setIsNewConsultation(false);
+      }
       
       console.log('📥 Full response:', JSON.stringify(res, null, 2));
       console.log('📥 res.data:', res.data);
@@ -65,39 +182,55 @@ export default function ChatScreen() {
       
       const aiResponse = responseData.response || 'No response';
       
-      const newAiMsg = {
-      role: 'assistant',
-       text: aiResponse,
-      time: new Date().toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  }),
-  provenance: responseData.provenance || null,
-  sources: responseData.sources || [],
-  ragUsed: responseData.ragUsed || false,
-};
-setMessages((prev) => [...prev, newAiMsg]);
+      // Update chatId if it's returned from the server (new chat created)
+      if (responseData.chatId) {
+        setCurrentChatId(responseData.chatId);
+      }
       
       // Update context: use currentContext from response if available, otherwise build from response
       const newContext = responseData.currentContext || {
         stage: responseData.stage,
-        currentDetails: responseData.currentDetails,
+        currentDetails: responseData.currentDetails || context.currentDetails,
         missingInfo: responseData.missingInfo,
-        testSession: responseData.testSession
+        testSession: responseData.testSession || context.testSession,
+        diagnosisId: responseData.diagnosisId || context.diagnosisId,
+        diagnosisName: responseData.diagnosisName || context.diagnosisName,
+        testResults: responseData.testResults || context.testResults,
+        analysis: responseData.analysis || context.analysis,
+        refinedTreatmentPlan: responseData.refinedTreatmentPlan || context.refinedTreatmentPlan
       };
       setContext(newContext);
       
       console.log('✅ Updated Context:', newContext);
+      console.log('🔍 Checking for symptom checklist:', responseData.symptomChecklist);
+      console.log('🔍 Stage:', responseData.stage, 'Substage:', responseData.substage);
       
-      // Check if we should show symptom checklist
-      if (responseData.symptomChecklist) {
+      // Check if we should show symptom checklist (check both symptomChecklist and substage)
+      if (responseData.symptomChecklist || responseData.substage === 'SYMPTOM_CHECKLIST') {
+        console.log('✅ Showing symptom checklist');
         setShowSymptomChecklist(true);
         setSymptomChecklistData({
           message: aiResponse,
-          symptomCategories: responseData.symptomChecklist,
+          symptomCategories: responseData.symptomChecklist || {},
           context: newContext
         });
+        // Don't add message to chat when showing symptom checklist - the checklist UI will show the message
+        return;
       }
+      
+      // Only add message to chat if we're not showing symptom checklist
+      const newAiMsg = {
+        role: 'assistant',
+        text: aiResponse,
+        time: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        provenance: responseData.provenance || null,
+        sources: responseData.sources || [],
+        ragUsed: responseData.ragUsed || false,
+      };
+      setMessages((prev) => [...prev, newAiMsg]);
       
       // Check if we should show diagnosis list
      if (responseData.stage === 'DIAGNOSIS_LIST') {
@@ -152,6 +285,7 @@ setMessages((prev) => [...prev, newAiMsg]);
         chatHistory: messages,
         currentContext: context,
         selectedSymptoms: selectedSymptoms, // Pass the selected symptoms array
+        chatId: currentChatId,
       });
       
       console.log('📥 Full response:', JSON.stringify(res, null, 2));
@@ -218,6 +352,7 @@ setMessages((prev) => [...prev, newAiMsg]);
         chatHistory: messages,
         currentContext: context,
         diagnosisId: diagnosisId,
+        chatId: currentChatId,
       });
       
       const responseData = res.data?.data || res.data;
@@ -226,12 +361,22 @@ setMessages((prev) => [...prev, newAiMsg]);
       if (responseData.diagnosisDetail) {
         setShowDiagnosisList(false);
         setShowDiagnosisDetail(true);
+        
+        // Update context to include diagnosis detail for later use
+        const updatedContext = {
+          ...context,
+          ...responseData.currentContext,
+          diagnosisId: diagnosisId,
+          diagnosisName: responseData.diagnosisDetail.diagnosisName || diagnosisId,
+          diagnosisDetail: responseData.diagnosisDetail
+        };
+        
         setDiagnosisDetailData({
           diagnosisDetail: responseData.diagnosisDetail,
           diagnosisId: diagnosisId,
-          context: responseData.currentContext || context
+          context: updatedContext
         });
-        setContext(responseData.currentContext || context);
+        setContext(updatedContext);
       }
     } catch (err) {
       console.error('❌ Error fetching diagnosis detail:', err);
@@ -247,6 +392,7 @@ setMessages((prev) => [...prev, newAiMsg]);
         chatHistory: messages,
         currentContext: context,
         startDiagnosticTest: true,
+        chatId: currentChatId,
       });
       
       const responseData = res.data?.data || res.data;
@@ -298,22 +444,40 @@ setMessages((prev) => [...prev, newAiMsg]);
         chatHistory: messages,
         currentContext: context,
         testResponse: testResponse,
+        chatId: currentChatId,
       });
       
       const responseData = res.data?.data || res.data;
       console.log('📊 Test action response:', responseData);
       
       // Update context with new test session data
-      if (responseData.testSession) {
-        setContext({ ...context, testSession: responseData.testSession });
-      }
+      const newContext = responseData.currentContext || {
+        ...context,
+        testSession: responseData.testSession || context.testSession,
+        diagnosisId: responseData.diagnosisId || context.diagnosisId,
+        analysis: responseData.analysis || context.analysis,
+        testResults: responseData.testResults || context.testResults
+      };
+      setContext(newContext);
       
       // Handle different response stages
       if (responseData.stage === 'DIAGNOSTIC_TEST_COMPLETE') {
         // Tests are complete, show results
-        setShowDiagnosticTest(false);
-        setShowTestResults(true);
+        // Update both diagnosticTestData and testResultsData for consistency
+        setDiagnosticTestData(responseData);
         setTestResultsData(responseData);
+        setShowDiagnosticTest(true);
+        setShowTestResults(true);
+        // Update context with complete test data
+        setContext({
+          ...newContext,
+          testSession: {
+            ...newContext.testSession,
+            diagnosisId: responseData.diagnosisId,
+            testResults: responseData.testResults,
+            analysis: responseData.analysis
+          }
+        });
       } else if (responseData.stage && responseData.stage.includes('DIAGNOSTIC_TEST')) {
         // Still in testing, update the test UI
         setDiagnosticTestData(responseData);
@@ -338,9 +502,192 @@ setMessages((prev) => [...prev, newAiMsg]);
     }
   };
 
+  const handleStartTreatmentChat = async () => {
+    console.log('💬 Starting treatment chat');
+    setIsLoading(true);
+    
+    try {
+      // Get diagnostic test data from whichever source has it
+      const testData = diagnosticTestData || testResultsData || {};
+      const testAnalysis = testData.analysis || {};
+      const testResults = testData.testResults || [];
+      const testDiagnosisId = testData.diagnosisId || context.diagnosisId;
+      
+      // Store the current diagnostic test data in context before transitioning
+      const enhancedContext = {
+        ...context,
+        diagnosisId: testDiagnosisId,
+        testResults: testResults,
+        analysis: testAnalysis,
+        refinedTreatmentPlan: testAnalysis.refinedTreatmentPlan || {},
+        testSession: {
+          ...context.testSession,
+          diagnosisId: testDiagnosisId,
+          testResults: testResults,
+          analysis: testAnalysis
+        }
+      };
+      
+      console.log('📋 Enhanced context for treatment chat:', enhancedContext);
+      
+      const res = await sendChatMessage({
+        message: 'Tell me more about my treatment plan',
+        chatHistory: messages,
+        currentContext: enhancedContext,
+        startTreatmentChat: true,
+        chatId: currentChatId,
+      });
+      
+      const responseData = res.data?.data || res.data;
+      console.log('📊 Treatment chat response:', responseData);
+      
+      // Hide diagnostic test UI and show chat
+      setShowDiagnosticTest(false);
+      setShowTestResults(false);
+      setShowDiagnosisList(false);
+      setShowDiagnosisDetail(false);
+      
+      // Add the treatment plan as the first message in chat
+      const treatmentPlanMessage = {
+        role: 'assistant',
+        text: responseData.response || 'Here is your treatment plan...',
+        time: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      };
+      
+      // Update messages with treatment plan
+      setMessages((prev) => [...prev, treatmentPlanMessage]);
+      
+      // Update context for follow-up questions - preserve all treatment chat context
+      const newContext = responseData.currentContext || {
+        ...enhancedContext,
+        stage: responseData.stage || 'TREATMENT_CHAT',
+        diagnosisName: responseData.diagnosisName || enhancedContext.diagnosisName,
+        currentDetails: responseData.currentDetails || enhancedContext.currentDetails
+      };
+      setContext(newContext);
+      
+      console.log('✅ Updated context for treatment chat:', newContext);
+    } catch (err) {
+      console.error('❌ Error starting treatment chat:', err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: 'Sorry, I encountered an error. Please try again.',
+          time: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleBackToDiagnosisList = () => {
     setShowDiagnosisDetail(false);
     setShowDiagnosisList(true);
+  };
+
+  const handleConfirmInjury = async () => {
+    console.log('✅ Confirming injury');
+    setIsLoading(true);
+    
+    try {
+      // Get diagnosis ID and details from the diagnosis detail data
+      const diagnosisId = diagnosisDetailData?.diagnosisId || context.diagnosisId;
+      const diagnosisDetail = diagnosisDetailData?.diagnosisDetail || {};
+      const diagnosisName = diagnosisDetail.diagnosisName || diagnosisId;
+      
+      // Build enhanced context with confirmed diagnosis
+      const enhancedContext = {
+        ...context,
+        diagnosisId: diagnosisId,
+        diagnosisName: diagnosisName,
+        confirmedDiagnosis: true,
+        diagnosisDetail: diagnosisDetail,
+        currentDetails: {
+          ...context.currentDetails,
+          diagnosisId: diagnosisId,
+          diagnosisName: diagnosisName,
+          confirmedDiagnosis: true
+        }
+      };
+      
+      console.log('📋 Enhanced context for confirmed injury:', enhancedContext);
+      
+      const res = await sendChatMessage({
+        message: `I confirm I have ${diagnosisName}`,
+        chatHistory: messages,
+        currentContext: enhancedContext,
+        confirmInjury: true,
+        diagnosisId: diagnosisId,
+        chatId: currentChatId,
+      });
+      
+      const responseData = res.data?.data || res.data;
+      console.log('📊 Confirm injury response:', responseData);
+      
+      // Hide diagnosis detail UI and show chat
+      setShowDiagnosisDetail(false);
+      setShowDiagnosisList(false);
+      setShowSymptomChecklist(false);
+      
+      // Add a user message confirming the injury
+      const confirmMessage = {
+        role: 'user',
+        text: `I confirm I have ${diagnosisName}`,
+        time: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      };
+      setMessages((prev) => [...prev, confirmMessage]);
+      
+      // Add the assistant's response
+      const assistantResponse = {
+        role: 'assistant',
+        text: responseData.response || `Got it! I've noted that you have ${diagnosisName}. How can I help you with your treatment and recovery?`,
+        time: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        provenance: responseData.provenance || null,
+        sources: responseData.sources ? (typeof responseData.sources === 'string' ? responseData.sources.split('\n') : responseData.sources) : [],
+        ragUsed: responseData.ragUsed || false,
+      };
+      setMessages((prev) => [...prev, assistantResponse]);
+      
+      // Update context for follow-up questions
+      const newContext = responseData.currentContext || {
+        ...enhancedContext,
+        stage: responseData.stage || 'CONFIRMED_INJURY_CHAT',
+        diagnosisName: responseData.diagnosisName || diagnosisName,
+        currentDetails: responseData.currentDetails || enhancedContext.currentDetails
+      };
+      setContext(newContext);
+      
+      console.log('✅ Updated context for confirmed injury chat:', newContext);
+    } catch (err) {
+      console.error('❌ Error confirming injury:', err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: 'Sorry, I encountered an error. Please try again.',
+          time: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Render diagnostic test UI inline based on server response
@@ -605,13 +952,20 @@ setMessages((prev) => [...prev, newAiMsg]);
 
           <TouchableOpacity 
             style={styles.primaryButton}
+            onPress={handleStartTreatmentChat}
+          >
+            <Text style={styles.primaryButtonText}>💬 Tell me more about my treatment plan</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.secondaryButton}
             onPress={() => {
               setShowDiagnosticTest(false);
               setShowTestResults(false);
               setShowDiagnosisDetail(true);
             }}
           >
-            <Text style={styles.primaryButtonText}>← Back to Diagnosis Details</Text>
+            <Text style={styles.secondaryButtonText}>← Back to Diagnosis Details</Text>
           </TouchableOpacity>
         </ScrollView>
       );
@@ -619,6 +973,18 @@ setMessages((prev) => [...prev, newAiMsg]);
 
     return null;
   };
+
+  // Show loading state while loading chat history
+  if (loadingChat) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#007AFF" />
+          <Text style={styles.loadingText}>Loading conversation...</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -640,21 +1006,25 @@ setMessages((prev) => [...prev, newAiMsg]);
           diagnosisDetail={diagnosisDetailData.diagnosisDetail}
           onStartDiagnosticTest={handleStartDiagnosticTest}
           onBack={handleBackToDiagnosisList}
+          onConfirmInjury={handleConfirmInjury}
         />
       ) : (showDiagnosticTest || showTestResults) && diagnosticTestData ? (
         renderDiagnosticTestUI()
       ) : (
         <>
-          <ScrollView contentContainerStyle={styles.chatArea}>
-            {messages.map((msg, index) => (
-              <ChatBubble
-                key={index}
-                role={msg.role}
-                text={msg.text}
-                time={msg.time}
-              />
-            ))}
-          </ScrollView>
+           <ScrollView contentContainerStyle={styles.chatArea}>
+             {messages.map((msg, index) => (
+               <ChatBubble
+                 key={index}
+                 role={msg.role}
+                 text={msg.text}
+                 time={msg.time}
+                 provenance={msg.provenance}
+                 sources={msg.sources}
+                 ragUsed={msg.ragUsed}
+               />
+             ))}
+           </ScrollView>
           <ChatInput input={input} setInput={setInput} onSend={handleSend} />
         </>
       )}

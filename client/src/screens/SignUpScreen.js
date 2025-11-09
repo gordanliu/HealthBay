@@ -11,10 +11,16 @@ export default function SignUpScreen({ navigation, setUser }) {
   const [password, setPassword] = useState('');
 
   const handleSignUp = () => {
-    // simple validation (need more)
+    // Since backend uses hardcoded user, any credentials work
+    // Just need to fill in all fields to proceed
     if (firstName && lastName && birthday && gender && username && password) {
-      setUser({ name: username, firstName, lastName }); // logs in user immediately
-      Alert.alert('Sign Up Successful', `Welcome, ${firstName}!`);
+      setUser({ 
+        id: '00000000-0000-0000-0000-000000000000',
+        name: username, 
+        firstName, 
+        lastName 
+      }); // logs in user immediately
+      // No alert needed, just navigate
     } else {
       Alert.alert('Error', 'Please fill in all fields');
     }

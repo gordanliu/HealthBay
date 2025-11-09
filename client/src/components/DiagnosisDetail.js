@@ -1,6 +1,6 @@
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 
-export default function DiagnosisDetail({ diagnosisDetail, onStartDiagnosticTest, onBack }) {
+export default function DiagnosisDetail({ diagnosisDetail, onStartDiagnosticTest, onBack, onConfirmInjury }) {
   const {
     diagnosisName,
     overview,
@@ -238,6 +238,19 @@ export default function DiagnosisDetail({ diagnosisDetail, onStartDiagnosticTest
             ⚠️ This is AI-generated guidance based on general information. Always consult a healthcare professional for accurate diagnosis and personalized treatment.
           </Text>
         </View>
+
+        {/* Confirm Injury Button */}
+        {onConfirmInjury && (
+          <View style={styles.confirmSection}>
+            <TouchableOpacity 
+              style={styles.confirmButton}
+              onPress={onConfirmInjury}
+            >
+              <Text style={styles.confirmButtonText}>✓ Confirm Injury</Text>
+              <Text style={styles.confirmButtonSubtext}>Start a conversation about this injury</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </ScrollView>
     </View>
   );
@@ -458,5 +471,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#7f8c8d',
     lineHeight: 18,
+  },
+  confirmSection: {
+    marginTop: 24,
+    marginBottom: 16,
+  },
+  confirmButton: {
+    backgroundColor: '#4CAF50',
+    borderRadius: 12,
+    padding: 18,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  confirmButtonText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 4,
+  },
+  confirmButtonSubtext: {
+    fontSize: 14,
+    color: '#fff',
+    opacity: 0.9,
   },
 });

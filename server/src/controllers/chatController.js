@@ -2,6 +2,7 @@
 import { queryRAG } from "../services/ragService.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { supabase } from "../config/db.js";
+import { DEFAULT_USER_ID } from "../config/constants.js";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
@@ -60,7 +61,9 @@ export async function handleChat(req, res) {
       startDiagnosticTest = false,
       testResponse = null,
       exitDiagnosticTest = false,
-      selectedSymptoms = null  // New: for symptom checklist submission
+      selectedSymptoms = null,  // New: for symptom checklist submission
+      startTreatmentChat = false,  // New: for transitioning from diagnostic tests to treatment chat
+      confirmInjury = false  // New: for confirming injury and starting open chat
     } = req.body;
     
     if (!message || typeof message !== 'string') {
@@ -74,11 +77,21 @@ export async function handleChat(req, res) {
     console.log("📝 Test Response:", testResponse);
     console.log("🚪 Exit Diagnostic Test:", exitDiagnosticTest);
     console.log("✅ Selected Symptoms:", selectedSymptoms);
+    console.log("💬 Start Treatment Chat:", startTreatmentChat);
+    console.log("✅ Confirm Injury:", confirmInjury);
     
     let response;
     
+    // If user wants to confirm injury and start open chat
+    if (confirmInjury) {
+      response = await handleConfirmInjury(diagnosisId, currentContext, chatHistory);
+    }
+    // If user wants to start treatment chat from diagnostic tests
+    else if (startTreatmentChat) {
+      response = await handleTreatmentChat(currentContext, chatHistory);
+    }
     // If user wants to exit diagnostic testing and return to diagnosis detail
-    if (exitDiagnosticTest) {
+    else if (exitDiagnosticTest) {
       const exitDiagnosisId = currentContext.testSession?.diagnosisId || diagnosisId;
       response = await handleDiagnosisDetail(exitDiagnosisId, currentContext, "Return to diagnosis details");
       response.returnedFromTest = true;
@@ -107,6 +120,14 @@ export async function handleChat(req, res) {
     // If we have diagnosis context (after diagnosis list), handle conversational follow-up
     else if (currentContext.stage === "DIAGNOSIS_LIST" && currentContext.currentDetails) {
       response = await handleConversationalFollowUp(message, currentContext, chatHistory);
+    }
+    // If we're in TREATMENT_CHAT stage, handle as conversational follow-up with full context
+    else if (currentContext.stage === "TREATMENT_CHAT" && currentContext.currentDetails) {
+      response = await handleTreatmentChatFollowUp(message, currentContext, chatHistory);
+    }
+    // If we're in CONFIRMED_INJURY_CHAT stage, handle as conversational follow-up with diagnosis context
+    else if (currentContext.stage === "CONFIRMED_INJURY_CHAT" && currentContext.currentDetails) {
+      response = await handleConfirmedInjuryFollowUp(message, currentContext, chatHistory);
     }
     // If we have other ongoing context (DIAGNOSIS_DETAIL, CONVERSATIONAL, etc.), handle follow-up
     else if (currentContext.currentDetails && Object.keys(currentContext.currentDetails).length > 0 && currentContext.stage) {
@@ -138,76 +159,171 @@ export async function handleChat(req, res) {
 
     // --- 💾 Persist chat + messages ---
 try {
-  const userId = req.user?.id || "00000000-0000-0000-0000-000000000000"; // temp anon user
+  const userId = DEFAULT_USER_ID;
   const aiText = response?.response || response?.diagnosisDetail?.overview || "No AI response";
+  
+  // Get chatId from request if provided (for continuing an existing chat)
+  // If startNewChat is true, ignore chatId and always create a new chat
+  const startNewChat = req.body.startNewChat || false;
+  const chatId = startNewChat ? null : (req.body.chatId || null);
+  
+  // Build comprehensive metadata for context restoration
+  const responseContext = response?.currentContext || {};
+  const mergedContext = { ...currentContext, ...responseContext };
+  
   const aiMetadata = {
-    stage: response?.stage || "unknown",
-    type: response?.type || "unknown",
-    ragUsed: response?.ragUsed || false,
-    coverageScore: response?.coverageScore || 0,
-    provenance: response?.provenance || "unknown",
+    stage: response?.stage || mergedContext.stage || "unknown",
+    type: response?.type || mergedContext.type || "unknown",
+    ragUsed: response?.ragUsed || mergedContext.ragUsed || false,
+    coverageScore: response?.coverageScore || mergedContext.coverageScore || 0,
+    provenance: response?.provenance || mergedContext.provenance || "unknown",
+    diagnosisId: response?.diagnosisId || mergedContext.diagnosisId || null,
+    diagnosisName: response?.diagnosisName || mergedContext.diagnosisName || null,
+    // Store essential context for restoration
+    currentDetails: response?.currentDetails || mergedContext.currentDetails || {},
+    // Store diagnosis detail reference (not full object to avoid size issues)
+    diagnosisDetail: response?.diagnosisDetail ? {
+      diagnosisName: response.diagnosisDetail.diagnosisName,
+      overview: response.diagnosisDetail.overview,
+      treatmentPlan: response.diagnosisDetail.treatmentPlan,
+      recoveryTimeline: response.diagnosisDetail.recoveryTimeline,
+    } : (mergedContext.diagnosisDetail ? {
+      diagnosisName: mergedContext.diagnosisDetail.diagnosisName,
+      overview: mergedContext.diagnosisDetail.overview,
+      treatmentPlan: mergedContext.diagnosisDetail.treatmentPlan,
+      recoveryTimeline: mergedContext.diagnosisDetail.recoveryTimeline,
+    } : null),
+    // Store test session summary
+    testSession: mergedContext.testSession ? {
+      diagnosisId: mergedContext.testSession.diagnosisId,
+      testResults: mergedContext.testSession.testResults,
+      analysis: mergedContext.testSession.analysis,
+    } : null,
+    // Store test results and analysis
+    testResults: response?.testResults || mergedContext.testResults || null,
+    analysis: response?.analysis || mergedContext.analysis || null,
+    refinedTreatmentPlan: response?.refinedTreatmentPlan || mergedContext.refinedTreatmentPlan || null,
   };
 
-  // 1️⃣ Get or create active chat for this user
-  let { data: activeChat, error: chatErr } = await supabase
-    .from("chats")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("status", "active")
-    .maybeSingle();
+  let activeChat;
+  
+  if (chatId) {
+    // Load existing chat
+    const { data: chat, error: chatErr } = await supabase
+      .from("chats")
+      .select("*")
+      .eq("id", chatId)
+      .eq("user_id", userId)
+      .single();
 
-  if (chatErr) console.error("⚠️ Chat lookup error:", chatErr);
+    if (chatErr) {
+      console.error("⚠️ Chat lookup error:", chatErr);
+    } else {
+      activeChat = chat;
+    }
+  }
 
+  // If no active chat specified, create a new one (don't reuse existing active chats)
+  // This ensures each "new consultation" creates a separate chat
   if (!activeChat) {
+    // Always create a new chat when chatId is not provided
+    // This prevents overwriting old chats
+    const chatTitle = response?.diagnosisName || 
+                     response?.currentDetails?.injury_name || 
+                     response?.currentDetails?.body_part + " injury" ||
+                     "New Consultation";
+    
     const { data: newChat, error: newChatErr } = await supabase
       .from("chats")
       .insert({
         user_id: userId,
-        title:
-          response?.currentDetails?.injury_name ||
-          "New Consultation",
+        title: chatTitle,
         context_summary: message.slice(0, 120),
         status: "active",
       })
       .select()
       .single();
 
-    if (newChatErr) console.error("❌ Chat creation failed:", newChatErr);
-    activeChat = newChat;
+    if (newChatErr) {
+      console.error("❌ Chat creation failed:", newChatErr);
+    } else {
+      activeChat = newChat;
+      console.log("✅ Created new chat:", newChat.id);
+    }
   }
 
-  // 2️⃣ Insert user + AI messages
-  const { error: msgError } = await supabase.from("messages").insert([
-    {
-      chat_id: activeChat.id,
-      sender: "user",
-      text: message,
-    },
-    {
-      chat_id: activeChat.id,
-      sender: "ai",
-      text: aiText,
-      metadata: aiMetadata,
-      source_docs: response?.sources || [],
-    },
-  ]);
+  if (activeChat) {
+    // Insert user message
+    const { error: userMsgError } = await supabase
+      .from("messages")
+      .insert({
+        chat_id: activeChat.id,
+        sender: "user",
+        text: message,
+      });
 
-  if (msgError) console.error("❌ Message insert error:", msgError);
+    if (userMsgError) console.error("❌ User message insert error:", userMsgError);
 
-  // 3️⃣ Update chat summary + last activity
-  await supabase
-    .from("chats")
-    .update({
-      last_activity: new Date().toISOString(),
-      context_summary: message.slice(0, 120),
-      title:
-        response?.currentDetails?.injury_name ||
-        activeChat.title ||
-        "Consultation",
-    })
-    .eq("id", activeChat.id);
+    // Insert AI message with metadata
+    // Format sources for JSONB storage
+    let sourceDocs = null;
+    if (response?.sources) {
+      if (typeof response.sources === 'string') {
+        // If it's a string with newlines, split it
+        sourceDocs = response.sources.split('\n')
+          .filter(s => s.trim())
+          .map(s => ({ text: s.trim() }));
+      } else if (Array.isArray(response.sources)) {
+        // If it's an array, format each item
+        sourceDocs = response.sources.map(s => {
+          if (typeof s === 'string') {
+            return { text: s };
+          } else if (s && typeof s === 'object') {
+            return s;
+          }
+          return { text: String(s) };
+        }).filter(s => s.text);
+      }
+    }
 
-  console.log(`💾 Saved messages for chat ${activeChat.id}`);
+    const { error: aiMsgError } = await supabase
+      .from("messages")
+      .insert({
+        chat_id: activeChat.id,
+        sender: "ai",
+        text: aiText,
+        metadata: aiMetadata,
+        source_docs: sourceDocs && sourceDocs.length > 0 ? sourceDocs : null,
+      });
+
+    if (aiMsgError) console.error("❌ AI message insert error:", aiMsgError);
+
+    // Update chat summary + last activity
+    const updateTitle = response?.diagnosisName || 
+                       response?.currentDetails?.injury_name || 
+                       activeChat.title;
+    
+    // Get current message count from database
+    const { count: messageCount } = await supabase
+      .from("messages")
+      .select("*", { count: "exact", head: true })
+      .eq("chat_id", activeChat.id);
+    
+    await supabase
+      .from("chats")
+      .update({
+        last_activity: new Date().toISOString(),
+        context_summary: message.slice(0, 120),
+        title: updateTitle,
+        messages_count: messageCount || 0,
+      })
+      .eq("id", activeChat.id);
+
+    console.log(`💾 Saved messages for chat ${activeChat.id}`);
+    
+    // Include chatId in response so frontend can continue using it
+    response.chatId = activeChat.id;
+  }
 } catch (persistErr) {
   console.error("💥 Chat persistence failed:", persistErr);
 }
@@ -891,11 +1007,26 @@ Provide comprehensive information about this diagnosis. Return ONLY a JSON objec
     };
   }
   
+  // Build enhanced context that includes diagnosis detail
+  const enhancedContext = {
+    ...currentContext,
+    stage: "DIAGNOSIS_DETAIL",
+    diagnosisId: diagnosisId,
+    diagnosisName: diagnosisDetail.diagnosisName || diagnosisId,
+    diagnosisDetail: diagnosisDetail,
+    currentDetails: {
+      ...details,
+      diagnosisId: diagnosisId,
+      diagnosisName: diagnosisDetail.diagnosisName || diagnosisId
+    }
+  };
+  
   return {
     stage: "DIAGNOSIS_DETAIL",
     type: "injury",
     diagnosisId: diagnosisId,
     diagnosisDetail: diagnosisDetail,
+    currentContext: enhancedContext,
     disclaimer: "⚠️ This is AI-generated guidance based on general information. Always consult a healthcare professional for accurate diagnosis and personalized treatment.",
     nextAction: "conversation_or_test",
     uiHint: "Show detailed diagnosis page with sections. User can ask follow-up questions or start diagnostic tests.",
@@ -1325,6 +1456,403 @@ Based on these test results, provide a comprehensive refined assessment. Return 
       backAction: "exit_to_diagnosis",
       backLabel: "← Back to Diagnosis"
     }
+  };
+}
+
+/**
+ * Handle transition from diagnostic tests to treatment chat
+ * Generates a comprehensive treatment plan and sets up context for follow-up questions
+ */
+async function handleTreatmentChat(currentContext, chatHistory) {
+  const details = currentContext.currentDetails || {};
+  // Check multiple locations for diagnosis and test data
+  const diagnosisId = currentContext.testSession?.diagnosisId || currentContext.diagnosisId;
+  const testResults = currentContext.testResults || currentContext.testSession?.testResults || [];
+  const analysis = currentContext.analysis || currentContext.testSession?.analysis || {};
+  
+  // Build context string for treatment plan generation
+  const testResultsString = testResults.length > 0
+    ? testResults.map(r => `${r.testName}: ${r.result}${r.painLevel ? ` (Pain: ${r.painLevel}/10)` : ''}`).join('\n')
+    : 'No test results available';
+  
+  const refinedTreatmentPlan = analysis.refinedTreatmentPlan || {};
+  const diagnosisName = analysis.refinedDiagnosis?.name || diagnosisId || 'your injury';
+  
+  const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has just completed diagnostic tests and wants to discuss their treatment plan.
+
+User's Context:
+- Diagnosis: ${diagnosisName}
+- Body Part: ${details.body_part || 'Not specified'}
+- Symptoms: ${details.symptoms?.join(', ') || 'Not specified'}
+- Duration: ${details.duration || 'Not specified'}
+- Context: ${details.context || 'Not specified'}
+
+Test Results:
+${testResultsString}
+
+Refined Treatment Plan Available:
+- Immediate Care: ${refinedTreatmentPlan.immediate?.join(', ') || 'RICE protocol, rest'}
+- Week 1: ${refinedTreatmentPlan.week1?.join(', ') || 'Continuing care'}
+- Weeks 2-3: ${refinedTreatmentPlan.week2_3?.join(', ') || 'Progressive rehabilitation'}
+- Ongoing: ${refinedTreatmentPlan.ongoing?.join(', ') || 'Long-term care'}
+${refinedTreatmentPlan.requiresProfessional?.length > 0 ? `- Professional Care Needed: ${refinedTreatmentPlan.requiresProfessional.join(', ')}` : ''}
+
+Analysis Summary:
+- Confidence: ${analysis.confidenceLevel || 'moderate'}
+- Assessment: ${analysis.assessment || 'Tests completed successfully'}
+- Recovery Timeline: ${analysis.estimatedRecovery || '4-6 weeks'}
+
+Generate a comprehensive, conversational treatment plan message that:
+1. Acknowledges their completion of the diagnostic tests
+2. Provides a clear, organized treatment plan based on the refined treatment plan data
+3. Explains what they should do immediately, in the coming weeks, and long-term
+4. Mentions any professional care recommendations if applicable
+5. Sets expectations for recovery timeline
+6. Encourages them to ask follow-up questions
+7. Uses a warm, supportive, and conversational tone (not robotic or clinical)
+8. Organize it clearly but keep it conversational - use natural language, not bullet points unless necessary
+
+The message should feel like a helpful conversation starter about their treatment plan. After this message, the user will be able to ask any follow-up questions about their injury, treatment, recovery, etc.`;
+
+  const result = await model.generateContent(prompt);
+  const treatmentPlanMessage = result.response.text();
+  
+  // Build enhanced context that includes all the necessary information for follow-up questions
+  const enhancedContext = {
+    ...currentContext,
+    stage: "TREATMENT_CHAT",
+    diagnosisId: diagnosisId,
+    diagnosisName: diagnosisName,
+    testResults: testResults,
+    analysis: analysis,
+    refinedTreatmentPlan: refinedTreatmentPlan,
+    currentDetails: {
+      ...details,
+      diagnosisId: diagnosisId,
+      diagnosisName: diagnosisName
+    }
+  };
+  
+  return {
+    stage: "TREATMENT_CHAT",
+    type: "injury",
+    response: treatmentPlanMessage,
+    diagnosisId: diagnosisId,
+    diagnosisName: diagnosisName,
+    currentContext: enhancedContext,
+    currentDetails: enhancedContext.currentDetails,
+    testResults: testResults,
+    analysis: analysis,
+    nextAction: "continue_conversation",
+    uiHint: "Show treatment plan message in chat. User can now ask follow-up questions about their injury, treatment, recovery, etc."
+  };
+}
+
+/**
+ * Handle injury confirmation and start open chat
+ * User confirms they have the selected diagnosis and wants to discuss it
+ */
+async function handleConfirmInjury(diagnosisId, currentContext, chatHistory) {
+  const details = currentContext.currentDetails || {};
+  const diagnosisDetail = currentContext.diagnosisDetail || {};
+  const diagnosisName = diagnosisDetail.diagnosisName || diagnosisId || 'your injury';
+  
+  // Build context for the welcome message
+  const bodyPart = details.body_part || 'the affected area';
+  const symptoms = details.symptoms?.join(', ') || 'your symptoms';
+  const treatmentPlan = diagnosisDetail.treatmentPlan || {};
+  const recoveryTimeline = diagnosisDetail.recoveryTimeline || {};
+  const whenToSeeDoctor = diagnosisDetail.whenToSeeDoctorImmediate || [];
+  const whenToSeeDoctor24_48 = diagnosisDetail.whenToSeeDoctor24_48hrs || [];
+  const redFlags = diagnosisDetail.redFlags || [];
+  const overview = diagnosisDetail.overview || '';
+  const estimatedRecoveryTime = diagnosisDetail.estimatedRecoveryTime || '';
+  
+  // Query RAG for relevant sources about this diagnosis
+  let ragResult = null;
+  try {
+    const ragQuery = `${diagnosisName} treatment plan rehabilitation recovery`;
+    ragResult = await queryRAG(ragQuery, {
+      injuryId: currentContext?.injury_id || null,
+      bodyPartId: currentContext?.body_part_id || mapBodyPartToId(details.body_part)
+    });
+  } catch (err) {
+    console.warn("⚠️ RAG service unavailable for injury confirmation:", err.message);
+    ragResult = null;
+  }
+  
+  const hasRelevantContext = !!ragResult?.ragUsed && !!ragResult?.context?.trim();
+  const coverageScore = ragResult?.coverageScore ?? 0;
+  
+  // Build treatment plan summary
+  const immediateCare = treatmentPlan.immediate?.join(', ') || 'RICE protocol (Rest, Ice, Compression, Elevation)';
+  const ongoingTreatment = treatmentPlan.ongoing?.join(', ') || 'Continuing care and monitoring';
+  const rehabilitation = treatmentPlan.rehabilitation?.join(', ') || 'Progressive rehabilitation exercises';
+  const requiresProfessional = treatmentPlan.requiresProfessional?.join(', ') || '';
+  
+  // Build recovery timeline summary
+  const recoveryTimelineSummary = recoveryTimeline.acute || recoveryTimeline.subacute || recoveryTimeline.chronic
+    ? `${recoveryTimeline.acute ? 'Acute phase: ' + recoveryTimeline.acute + '\\n' : ''}${recoveryTimeline.subacute ? 'Subacute phase: ' + recoveryTimeline.subacute + '\\n' : ''}${recoveryTimeline.chronic ? 'Return to activity: ' + recoveryTimeline.chronic : ''}`
+    : '';
+  
+  // Build RAG context section if available
+  const ragContextSection = hasRelevantContext
+    ? `\n\nRelevant evidence-based rehabilitation information from verified sources:\n${ragResult.context}\n\nSources available:\n${ragResult.sources?.map((s, i) => `[Source ${i + 1}] ${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')}`
+    : '';
+  
+  const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has just confirmed they have ${diagnosisName}.
+
+User's Context:
+- Confirmed Diagnosis: ${diagnosisName}
+- Body Part: ${bodyPart}
+- Symptoms: ${symptoms}
+- Duration: ${details.duration || 'Not specified'}
+- Context: ${details.context || 'Not specified'}
+
+Diagnosis Overview:
+${overview || `${diagnosisName} is a condition affecting ${bodyPart}.`}
+
+Treatment Plan Available:
+- Immediate Care (First 48 hours): ${immediateCare}
+- Ongoing Treatment: ${ongoingTreatment}
+- Rehabilitation: ${rehabilitation}
+${requiresProfessional ? `- Professional Care: ${requiresProfessional}` : ''}
+
+${recoveryTimelineSummary ? `Recovery Timeline:\\n${recoveryTimelineSummary}` : ''}
+${estimatedRecoveryTime ? `Estimated Recovery Time: ${estimatedRecoveryTime}` : ''}
+
+When to See a Doctor:
+${whenToSeeDoctor.length > 0 ? `- Immediate Care: ${whenToSeeDoctor.join(', ')}` : ''}
+${whenToSeeDoctor24_48.length > 0 ? `- Within 24-48 hours: ${whenToSeeDoctor24_48.join(', ')}` : ''}
+${redFlags.length > 0 ? `- Red Flags: ${redFlags.join(', ')}` : ''}${ragContextSection}
+
+Generate a comprehensive, warm, and helpful message that includes:
+
+1. **Opening Acknowledgment** (1-2 sentences):
+   - Acknowledge their confirmation of the diagnosis
+   - Show empathy and understanding
+   - Use a warm, supportive tone
+
+2. **General Overview of the Injury** (2-3 sentences):
+   - Provide a clear, concise overview of ${diagnosisName}
+   - Explain what it means in simple terms
+   - Mention how it typically affects people
+   - Reference the overview provided if available
+
+3. **Treatment Plan and Action Steps** (4-6 sentences):
+   - Start with immediate care recommendations (what to do now)
+   - Explain ongoing treatment steps
+   - Describe rehabilitation approach and exercises
+   - Mention when to seek professional medical care (doctor, physical therapist, etc.)
+   - Include recovery timeline expectations if available
+   - Be specific but conversational
+
+4. **When to See a Doctor** (2-3 sentences):
+   - Clearly state when they should seek immediate medical attention
+   - Mention when to see a doctor within 24-48 hours
+   - Highlight any red flags to watch for
+   - Emphasize the importance of professional evaluation when needed
+
+5. **Closing** (1-2 sentences):
+   - Offer ongoing support and answer questions
+   - Encourage them to ask about any aspect of their injury, treatment, or recovery
+   - Use an inviting, friendly tone
+
+Guidelines:
+- Use natural, conversational language (not clinical or robotic)
+- Be empathetic and supportive
+- Organize information clearly but flow naturally
+- Keep paragraphs short and readable
+- Use bullet points or numbered lists only when it makes the information clearer
+- Total length should be comprehensive but not overwhelming (aim for 8-12 sentences total)
+- Make it feel like a helpful conversation with a knowledgeable friend who cares about their recovery
+${hasRelevantContext ? '- IMPORTANT: When referencing information from the provided sources, cite them using [Source 1], [Source 2], etc. based on the source numbers provided above' : ''}
+${hasRelevantContext ? '- Prioritize information from the verified sources when available' : ''}
+${hasRelevantContext ? '- If you use information from sources, make sure to cite them appropriately in your response' : ''}
+
+Format the response as a single flowing message with clear sections.`;
+
+  const result = await model.generateContent(prompt);
+  const welcomeMessage = result.response.text();
+  
+  // Build source summary for frontend display
+  const sourceSummary = hasRelevantContext && ragResult.sources
+    ? ragResult.sources.map((s, i) => `[${i + 1}] ${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')
+    : null;
+  
+  const provenanceLabel = hasRelevantContext
+    ? "Based on verified clinical sources from HealthBay's database."
+    : "⚠️ AI-generated (no source match).";
+  
+  // Build enhanced context for follow-up questions
+  const enhancedContext = {
+    ...currentContext,
+    stage: "CONFIRMED_INJURY_CHAT",
+    diagnosisId: diagnosisId,
+    diagnosisName: diagnosisName,
+    confirmedDiagnosis: true,
+    diagnosisDetail: diagnosisDetail,
+    currentDetails: {
+      ...details,
+      diagnosisId: diagnosisId,
+      diagnosisName: diagnosisName,
+      confirmedDiagnosis: true
+    }
+  };
+  
+  return {
+    stage: "CONFIRMED_INJURY_CHAT",
+    type: "injury",
+    response: welcomeMessage,
+    diagnosisId: diagnosisId,
+    diagnosisName: diagnosisName,
+    currentContext: enhancedContext,
+    currentDetails: enhancedContext.currentDetails,
+    diagnosisDetail: diagnosisDetail,
+    ragUsed: hasRelevantContext,
+    provenance: provenanceLabel,
+    sources: sourceSummary,
+    nextAction: "continue_conversation",
+    uiHint: "Show welcome message in chat. User can now ask any questions about their confirmed injury, treatment, recovery, etc."
+  };
+}
+
+/**
+ * Handle follow-up questions for confirmed injury chat
+ * Uses diagnosis context and treatment plan information
+ */
+async function handleConfirmedInjuryFollowUp(message, currentContext, chatHistory) {
+  const details = currentContext.currentDetails || {};
+  const diagnosisId = currentContext.diagnosisId;
+  const diagnosisName = currentContext.diagnosisName || diagnosisId || 'your injury';
+  const diagnosisDetail = currentContext.diagnosisDetail || {};
+  const treatmentPlan = diagnosisDetail.treatmentPlan || {};
+  const recoveryTimeline = diagnosisDetail.recoveryTimeline || {};
+  
+  // Build treatment plan context
+  const treatmentPlanString = `
+Immediate Care: ${treatmentPlan.immediate?.join(', ') || 'RICE protocol, rest'}
+Ongoing Treatment: ${treatmentPlan.ongoing?.join(', ') || 'Continuing care'}
+Rehabilitation: ${treatmentPlan.rehabilitation?.join(', ') || 'Progressive exercises'}
+${treatmentPlan.requiresProfessional?.length > 0 ? `Professional Care Needed: ${treatmentPlan.requiresProfessional.join(', ')}` : ''}`;
+  
+  const recoveryTimelineString = recoveryTimeline.acute || recoveryTimeline.subacute || recoveryTimeline.chronic
+    ? `Recovery Timeline: ${recoveryTimeline.acute ? 'Acute: ' + recoveryTimeline.acute + ' ' : ''}${recoveryTimeline.subacute ? 'Subacute: ' + recoveryTimeline.subacute + ' ' : ''}${recoveryTimeline.chronic ? 'Return to Activity: ' + recoveryTimeline.chronic : ''}`
+    : '';
+  
+  const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has confirmed they have ${diagnosisName} and is in an ongoing conversation about their injury.
+
+Current Context:
+- Confirmed Diagnosis: ${diagnosisName}
+- Body Part: ${details.body_part || 'Not specified'}
+- Symptoms: ${details.symptoms?.join(', ') || 'Not specified'}
+- Duration: ${details.duration || 'Not specified'}
+- Context: ${details.context || 'Not specified'}
+
+Treatment Plan:
+${treatmentPlanString}
+
+${recoveryTimelineString ? recoveryTimelineString + '\n' : ''}
+Overview: ${diagnosisDetail.overview || 'General information about this injury'}
+
+The user just asked: "${message}"
+
+Provide a helpful, conversational response that:
+1. Answers their question directly and accurately
+2. References the treatment plan, recovery timeline, or diagnosis information when relevant
+3. Uses a warm, supportive, and conversational tone
+4. Is concise and focused on their specific question
+5. Encourages further questions if appropriate
+6. If they ask about something not covered, provide helpful guidance based on the diagnosis and general knowledge
+7. Always emphasize safety and when to seek professional medical care if relevant
+
+Be conversational and natural - match their communication style. If they're brief, be brief. Only elaborate when asked.`;
+
+  const result = await model.generateContent(prompt);
+  const aiResponse = result.response.text();
+  
+  return {
+    stage: "CONFIRMED_INJURY_CHAT",
+    type: "injury",
+    response: aiResponse,
+    diagnosisId: diagnosisId,
+    diagnosisName: diagnosisName,
+    currentContext: currentContext,
+    currentDetails: details,
+    nextAction: "continue_conversation",
+    uiHint: "Show response in chat. User can continue asking questions about their confirmed injury, treatment, recovery, etc."
+  };
+}
+
+/**
+ * Handle follow-up questions in treatment chat mode
+ * Uses full context including diagnosis, test results, and treatment plan
+ */
+async function handleTreatmentChatFollowUp(message, currentContext, chatHistory) {
+  const details = currentContext.currentDetails || {};
+  const diagnosisId = currentContext.diagnosisId;
+  const diagnosisName = currentContext.diagnosisName || diagnosisId || 'your injury';
+  const testResults = currentContext.testResults || [];
+  const analysis = currentContext.analysis || {};
+  const refinedTreatmentPlan = currentContext.refinedTreatmentPlan || {};
+  
+  // Build comprehensive context for the LLM
+  const testResultsString = testResults.length > 0
+    ? testResults.map(r => `${r.testName}: ${r.result}${r.painLevel ? ` (Pain: ${r.painLevel}/10)` : ''}`).join('\n')
+    : 'No test results available';
+  
+  const treatmentPlanString = `
+Immediate Care: ${refinedTreatmentPlan.immediate?.join(', ') || 'RICE protocol, rest'}
+Week 1: ${refinedTreatmentPlan.week1?.join(', ') || 'Continuing care'}
+Weeks 2-3: ${refinedTreatmentPlan.week2_3?.join(', ') || 'Progressive rehabilitation'}
+Ongoing: ${refinedTreatmentPlan.ongoing?.join(', ') || 'Long-term care'}
+${refinedTreatmentPlan.requiresProfessional?.length > 0 ? `Professional Care Needed: ${refinedTreatmentPlan.requiresProfessional.join(', ')}` : ''}`;
+  
+  const prompt = `You are HealthBay, an AI rehabilitation assistant. The user is in an ongoing conversation about their treatment plan for ${diagnosisName}.
+
+Current Context:
+- Diagnosis: ${diagnosisName}
+- Body Part: ${details.body_part || 'Not specified'}
+- Symptoms: ${details.symptoms?.join(', ') || 'Not specified'}
+- Duration: ${details.duration || 'Not specified'}
+- Context: ${details.context || 'Not specified'}
+
+Test Results:
+${testResultsString}
+
+Treatment Plan:
+${treatmentPlanString}
+
+Analysis:
+- Confidence: ${analysis.confidenceLevel || 'moderate'}
+- Assessment: ${analysis.assessment || 'Tests completed'}
+- Recovery Timeline: ${analysis.estimatedRecovery || '4-6 weeks'}
+
+The user just asked: "${message}"
+
+Provide a helpful, conversational response that:
+1. Answers their question directly and accurately
+2. References the treatment plan, test results, or diagnosis when relevant
+3. Uses a warm, supportive, and conversational tone
+4. Is concise and focused on their specific question
+5. Encourages further questions if appropriate
+6. If they ask about something not in the treatment plan, provide helpful guidance based on the diagnosis and context
+
+Be conversational and natural - match their communication style. If they're brief, be brief. Only elaborate when asked.`;
+
+  const result = await model.generateContent(prompt);
+  const aiResponse = result.response.text();
+  
+  return {
+    stage: "TREATMENT_CHAT",
+    type: "injury",
+    response: aiResponse,
+    diagnosisId: diagnosisId,
+    diagnosisName: diagnosisName,
+    currentContext: currentContext,
+    currentDetails: details,
+    nextAction: "continue_conversation",
+    uiHint: "Show response in chat. User can continue asking questions about their injury, treatment, recovery, etc."
   };
 }
 

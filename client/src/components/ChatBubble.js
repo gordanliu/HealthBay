@@ -3,6 +3,13 @@ import { View, Text, StyleSheet, Linking } from 'react-native';
 export default function ChatBubble({ role, text, time, provenance, sources, ragUsed }) {
   const isUser = role === 'user';
 
+  // Ensure sources is always an array
+  const sourcesArray = Array.isArray(sources) 
+    ? sources 
+    : sources && typeof sources === 'string'
+    ? sources.split('\n').filter(s => s.trim())
+    : [];
+
   return (
     <View
       style={[
@@ -27,20 +34,23 @@ export default function ChatBubble({ role, text, time, provenance, sources, ragU
             </Text>
           )}
 
-          {sources && sources.length > 0 && (
+          {sourcesArray.length > 0 && (
             <View style={styles.sourceContainer}>
-              {sources.map((src, i) => (
-                <Text
-                  key={i}
-                  style={styles.sourceLink}
-                  onPress={() => {
-                    const urlMatch = src.match(/https?:\/\/\S+/);
-                    if (urlMatch) Linking.openURL(urlMatch[0]);
-                  }}
-                >
-                  {src}
-                </Text>
-              ))}
+              {sourcesArray.map((src, i) => {
+                const sourceText = typeof src === 'string' ? src : (src?.text || JSON.stringify(src));
+                return (
+                  <Text
+                    key={i}
+                    style={styles.sourceLink}
+                    onPress={() => {
+                      const urlMatch = sourceText.match(/https?:\/\/\S+/);
+                      if (urlMatch) Linking.openURL(urlMatch[0]);
+                    }}
+                  >
+                    {sourceText}
+                  </Text>
+                );
+              })}
             </View>
           )}
         </>

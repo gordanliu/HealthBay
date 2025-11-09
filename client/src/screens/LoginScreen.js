@@ -15,9 +15,14 @@ export default function LoginScreen({ navigation, setUser }) {
   const [password, setPassword] = useState('');
 
   const handleLogin = () => {
+    // Since backend uses hardcoded user, any credentials work
+    // Just need to fill in both fields to proceed
     if (username && password) {
-      setUser({ name: username });
-      Alert.alert(`Welcome back, ${username}!`);
+      setUser({ 
+        id: '00000000-0000-0000-0000-000000000000',
+        name: username || 'User' 
+      });
+      // No alert needed, just navigate
     } else {
       Alert.alert('Error', 'Please enter both username and password');
     }

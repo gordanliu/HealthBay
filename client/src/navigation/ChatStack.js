@@ -13,7 +13,10 @@ export default function ChatStack({ setUser }) {
       <Stack.Screen
         name="Chat"
         component={ChatScreen}
-        options={{ title: 'New Consultation' }}
+        options={({ route }) => ({ 
+          title: route.params?.chatId ? 'Consultation' : 'New Consultation',
+          headerShown: true,
+        })}
       />
     </Stack.Navigator>
   );
