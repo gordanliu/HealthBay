@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert, Animated } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { getChats, deleteChat } from '../api/chatHistoryApi';
 
@@ -7,6 +7,8 @@ export default function HomeScreen({ navigation, setUser }) {
   const [chats, setChats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(0.9)).current;
 
   useEffect(() => {
     loadChats();
@@ -32,6 +34,21 @@ export default function HomeScreen({ navigation, setUser }) {
     } finally {
       setLoading(false);
       setRefreshing(false);
+      
+      // Animate in after loading
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.spring(scaleAnim, {
+          toValue: 1,
+          friction: 8,
+          tension: 40,
+          useNativeDriver: true,
+        }),
+      ]).start();
     }
   };
 
@@ -41,7 +58,24 @@ export default function HomeScreen({ navigation, setUser }) {
   };
 
   const handleStartNewChat = () => {
-    navigation.navigate('Chat', { isNewChat: true });
+    // Animate out before navigation
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(scaleAnim, {
+        toValue: 0.95,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      navigation.navigate('Chat', { isNewChat: true });
+      // Reset animations for when returning
+      fadeAnim.setValue(1);
+      scaleAnim.setValue(1);
+    });
   };
 
   const handleChatPress = (chatId) => {
@@ -149,49 +183,60 @@ export default function HomeScreen({ navigation, setUser }) {
 
   return (
     <View style={styles.container}>
-      {/* Header Section */}
-      <View style={styles.header}>
-        <Text style={styles.welcomeTitle}>Welcome to HealthBay</Text>
-        <Text style={styles.subtitle}>Your AI-powered health companion</Text>
-        
-        {/* Start New Conversation Button */}
-        <TouchableOpacity 
-          style={styles.newChatButton}
-          onPress={handleStartNewChat}
-        >
-          <Text style={styles.newChatButtonIcon}>+</Text>
-          <Text style={styles.newChatButtonText}>Start New Conversation</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Recent Conversations Section */}
-      <View style={styles.conversationsSection}>
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Recent Conversations</Text>
-          <Text style={styles.chatCount}>
-            {chats.length} {chats.length === 1 ? 'chat' : 'chats'}
-          </Text>
+      <Animated.View 
+        style={[
+          styles.animatedContainer,
+          {
+            opacity: fadeAnim,
+            transform: [{ scale: scaleAnim }],
+          },
+        ]}
+      >
+        {/* Header Section */}
+        <View style={styles.header}>
+          <Text style={styles.welcomeTitle}>Welcome to HealthBay</Text>
+          <Text style={styles.subtitle}>Your AI-powered health companion</Text>
+          
+          {/* Start New Conversation Button */}
+          <TouchableOpacity 
+            style={styles.newChatButton}
+            onPress={handleStartNewChat}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.newChatButtonIcon}>+</Text>
+            <Text style={styles.newChatButtonText}>Start New Conversation</Text>
+          </TouchableOpacity>
         </View>
 
-        {chats.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No conversations yet</Text>
-            <Text style={styles.emptySubtext}>
-              Start a new conversation to get help with your health concerns.
+        {/* Recent Conversations Section */}
+        <View style={styles.conversationsSection}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Recent Conversations</Text>
+            <Text style={styles.chatCount}>
+              {chats.length} {chats.length === 1 ? 'chat' : 'chats'}
             </Text>
           </View>
-        ) : (
-          <FlatList
-            data={chats}
-            renderItem={renderChatItem}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-            }
-          />
-        )}
-      </View>
+
+          {chats.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>No conversations yet</Text>
+              <Text style={styles.emptySubtext}>
+                Start a new conversation to get help with your health concerns.
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              data={chats}
+              renderItem={renderChatItem}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listContent}
+              refreshControl={
+                <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+              }
+            />
+          )}
+        </View>
+      </Animated.View>
     </View>
   );
 }
@@ -199,16 +244,26 @@ export default function HomeScreen({ navigation, setUser }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fafbfc',
+    backgroundColor: '#f5f7fa',
+  },
+  animatedContainer: {
+    flex: 1,
   },
   header: {
     backgroundColor: '#4CAF50',
     padding: 24,
     paddingTop: 60,
     paddingBottom: 32,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 6,
   },
   welcomeTitle: {
-    fontSize: 28,
+    fontSize: 30,
     fontWeight: 'bold',
     color: '#fff',
     marginBottom: 8,
@@ -216,33 +271,38 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 16,
     color: '#fff',
-    opacity: 0.9,
+    opacity: 0.95,
     marginBottom: 24,
+    fontWeight: '500',
   },
   newChatButton: {
     backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 16,
+    padding: 18,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: '#4CAF50',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   newChatButtonIcon: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#4CAF50',
     marginRight: 8,
   },
   newChatButtonText: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
     color: '#4CAF50',
   },
   conversationsSection: {
     flex: 1,
     padding: 16,
+    paddingTop: 24,
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -251,26 +311,27 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   sectionTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#2c3e50',
   },
   chatCount: {
     fontSize: 14,
     color: '#7f8c8d',
+    fontWeight: '500',
   },
   listContent: {
     paddingBottom: 16,
   },
   chatCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 14,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
     elevation: 2,
   },
   chatContent: {
@@ -290,18 +351,23 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   deleteButton: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: '#ffebee',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#f44336',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
   },
   deleteButtonText: {
-    fontSize: 18,
+    fontSize: 20,
     color: '#f44336',
     fontWeight: 'bold',
-    lineHeight: 18,
+    lineHeight: 20,
   },
   chatMeta: {
     flexDirection: 'row',
@@ -310,6 +376,7 @@ const styles = StyleSheet.create({
   chatMetaText: {
     fontSize: 12,
     color: '#7f8c8d',
+    fontWeight: '500',
   },
   chatSummary: {
     fontSize: 14,
@@ -320,17 +387,22 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#f5f7fa',
   },
   loadingText: {
     marginTop: 16,
     fontSize: 16,
     color: '#7f8c8d',
+    fontWeight: '500',
   },
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 40,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    margin: 8,
   },
   emptyText: {
     fontSize: 18,

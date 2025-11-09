@@ -357,9 +357,16 @@ async function classifyInput(message, chatHistory = []) {
 Message: "${message}"${historyContext}
 
 Determine if this is about:
-1. INJURY - Musculoskeletal injuries (sprains, strains, fractures, joint pain, sports injuries, muscle injuries, etc.)
+1. INJURY - Musculoskeletal injuries (sprains, strains, fractures, joint pain, sports injuries, muscle injuries, tendon/ligament issues, overuse injuries, etc.)
+   - Examples: "knee hurts from running", "twisted ankle", "elbow pain from tennis", "sore shoulder", "back pain", "pulled muscle"
+   - ANY pain or discomfort related to bones, joints, muscles, tendons, ligaments, or physical activity
+   - Sports-related pain or injuries
+   - Work-related physical strain or repetitive motion injuries
 2. GENERAL_HEALTH - General illnesses, infections, allergies, or non-musculoskeletal conditions
+   - Examples: fever, cold, flu, allergies, digestive issues, skin problems (not injury-related)
 3. OTHER - Unrelated to health
+
+IMPORTANT: If the message mentions ANY physical pain, soreness, or discomfort in a body part (even if vague like "my elbow is sore"), classify it as "injury" type. Most physical complaints are musculoskeletal.
 
 Also extract relevant details based on the type.
 
@@ -402,8 +409,20 @@ async function handleInjuryFlow(message, details, chatHistory, currentContext) {
   const { injury_name, body_part, symptoms, severity, duration, context, mechanism, medical_history } = details;
   
   console.log("🔍 Injury Flow - Checking details:", details);
+  console.log("📜 Chat History Length:", chatHistory.length);
+  console.log("🔐 Info Gathered Flag:", currentContext.infoGathered);
   
-  // Determine what information is missing
+  // CRITICAL: For the first message in a chat (when chatHistory is empty or length === 0),
+  // ALWAYS show the symptom checklist regardless of how much info was provided
+  const isFirstMessage = !chatHistory || chatHistory.length === 0;
+  
+  if (isFirstMessage) {
+    console.log("🆕 First message detected - ALWAYS showing symptom checklist");
+    // Always show symptom checklist on first message, no exceptions
+    return await getSymptomChecklist(message, details, ['symptoms']);
+  }
+  
+  // For subsequent messages, determine what information is missing
   // We need at least: body_part, symptoms (specific ones), duration, and either context or mechanism
   const missingInfo = [];
   
@@ -839,7 +858,6 @@ Instructions:
 - Use the provided context to inform diagnoses and explanations.
 - Only include findings directly supported by the retrieved text.
 - If additional reasoning is needed, label it as "AI-suggested".
-- Always mention when a source (e.g. [Source 1]) supports your statement.
 - Maintain empathy and clarity in your tone.
 
 Return ONLY a JSON object with this structure:
@@ -913,7 +931,7 @@ Return ONLY a JSON object with the same structure as above.
 
 // 🧩 Build source summary list if RAG was used
   const sourceSummary = hasRelevantContext
-  ? ragResult.sources?.map((s, i) => `[${i + 1}] ${s.title} - ${s.source_url || "No link available"}`).join("\n")
+  ? ragResult.sources?.map((s, i) => `${s.title}${s.source_url ? ` - ${s.source_url}` : ""}`).join("\n")
   : null;  
 
 return {
@@ -1478,6 +1496,47 @@ async function handleTreatmentChat(currentContext, chatHistory) {
   const refinedTreatmentPlan = analysis.refinedTreatmentPlan || {};
   const diagnosisName = analysis.refinedDiagnosis?.name || diagnosisId || 'your injury';
   
+  // Query RAG for treatment information - REQUIRED for evidence-based responses
+  let ragResult = null;
+  try {
+    const ragQuery = `${diagnosisName} treatment plan rehabilitation exercises recovery timeline`;
+    ragResult = await queryRAG(ragQuery, {
+      injuryId: currentContext?.injury_id || null,
+      bodyPartId: currentContext?.body_part_id || mapBodyPartToId(details.body_part)
+    });
+  } catch (err) {
+    console.error("❌ RAG service error for treatment chat:", err.message);
+    // Return error if RAG is not available - we need sources
+    return {
+      stage: "TREATMENT_CHAT",
+      type: "error",
+      response: "I apologize, but I'm unable to access verified medical sources at the moment. To ensure I provide you with accurate, evidence-based treatment information, please try again in a moment. Your safety and accurate information are my top priorities.",
+      currentContext: currentContext,
+      nextAction: "retry",
+      uiHint: "RAG service unavailable - cannot provide treatment information without verified sources"
+    };
+  }
+  
+  const hasRelevantContext = !!ragResult?.ragUsed && !!ragResult?.context?.trim();
+  const coverageScore = ragResult?.coverageScore ?? 0;
+  
+  console.log("📚 RAG context for treatment chat:", hasRelevantContext, "Coverage:", coverageScore.toFixed(2));
+  
+  // Build RAG context section with sources if available
+  const ragContextSection = hasRelevantContext
+    ? `\n\nRelevant evidence-based rehabilitation information from verified sources:\n${ragResult.context}\n\nSources available:\n${ragResult.sources?.map((s, i) => `[${i + 1}] ${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')}`
+    : '';
+  
+  // Build treatment plan summary as fallback context
+  const treatmentPlanSection = refinedTreatmentPlan && Object.keys(refinedTreatmentPlan).length > 0
+    ? `\n\nRefined Treatment Plan Available:
+- Immediate Care: ${refinedTreatmentPlan.immediate?.join(', ') || 'RICE protocol, rest'}
+- Week 1: ${refinedTreatmentPlan.week1?.join(', ') || 'Continuing care'}
+- Weeks 2-3: ${refinedTreatmentPlan.week2_3?.join(', ') || 'Progressive rehabilitation'}
+- Ongoing: ${refinedTreatmentPlan.ongoing?.join(', ') || 'Long-term care'}
+${refinedTreatmentPlan.requiresProfessional?.length > 0 ? `- Professional Care Needed: ${refinedTreatmentPlan.requiresProfessional.join(', ')}` : ''}`
+    : '';
+  
   const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has just completed diagnostic tests and wants to discuss their treatment plan.
 
 User's Context:
@@ -1490,32 +1549,71 @@ User's Context:
 Test Results:
 ${testResultsString}
 
-Refined Treatment Plan Available:
-- Immediate Care: ${refinedTreatmentPlan.immediate?.join(', ') || 'RICE protocol, rest'}
-- Week 1: ${refinedTreatmentPlan.week1?.join(', ') || 'Continuing care'}
-- Weeks 2-3: ${refinedTreatmentPlan.week2_3?.join(', ') || 'Progressive rehabilitation'}
-- Ongoing: ${refinedTreatmentPlan.ongoing?.join(', ') || 'Long-term care'}
-${refinedTreatmentPlan.requiresProfessional?.length > 0 ? `- Professional Care Needed: ${refinedTreatmentPlan.requiresProfessional.join(', ')}` : ''}
-
 Analysis Summary:
 - Confidence: ${analysis.confidenceLevel || 'moderate'}
 - Assessment: ${analysis.assessment || 'Tests completed successfully'}
 - Recovery Timeline: ${analysis.estimatedRecovery || '4-6 weeks'}
+${ragContextSection}${treatmentPlanSection}
+
+${hasRelevantContext ? 'CRITICAL: You MUST base your entire response on the verified sources provided above. Reference these sources naturally in your response.' : 'Generate a comprehensive treatment plan based on the refined treatment plan data and best practices for this type of injury.'}
 
 Generate a comprehensive, conversational treatment plan message that:
-1. Acknowledges their completion of the diagnostic tests
-2. Provides a clear, organized treatment plan based on the refined treatment plan data
-3. Explains what they should do immediately, in the coming weeks, and long-term
-4. Mentions any professional care recommendations if applicable
-5. Sets expectations for recovery timeline
-6. Encourages them to ask follow-up questions
-7. Uses a warm, supportive, and conversational tone (not robotic or clinical)
-8. Organize it clearly but keep it conversational - use natural language, not bullet points unless necessary
 
-The message should feel like a helpful conversation starter about their treatment plan. After this message, the user will be able to ask any follow-up questions about their injury, treatment, recovery, etc.`;
+1. **Opening Acknowledgment** (1-2 sentences):
+   - Acknowledge their completion of the diagnostic tests
+   - Show empathy and understanding about their results
+   - Use a warm, supportive tone
+
+2. **General Overview of the Injury** (2-3 sentences):
+   - Provide a clear, concise overview of ${diagnosisName}
+   - Explain what it means in simple terms based on the sources
+   - Mention how their test results relate to the diagnosis
+
+3. **Treatment Plan and Action Steps** (4-6 sentences):
+   - Start with immediate care recommendations (what to do now)
+   - Explain ongoing treatment steps
+   - Describe rehabilitation approach and exercises
+   - Mention when to seek professional medical care
+   - Include recovery timeline expectations
+   - Be specific but conversational
+   - ONLY use information from the verified sources above
+
+4. **Recovery Expectations** (2-3 sentences):
+   - Set realistic recovery timeline expectations
+   - Explain what they should expect during recovery
+   - Mention signs of progress to look for
+
+5. **Closing** (1-2 sentences):
+   - Offer ongoing support and answer questions
+   - Encourage them to ask about any aspect of their treatment or recovery
+   - Use an inviting, friendly tone
+
+Guidelines:
+- Use natural, conversational language (not clinical or robotic)
+- Be empathetic and supportive
+- Organize information clearly but flow naturally
+- Keep paragraphs short and readable
+- Use bullet points or numbered lists only when it makes the information clearer
+- Total length should be comprehensive but not overwhelming (aim for 8-12 sentences total)
+- Make it feel like a helpful conversation with a knowledgeable friend who cares about their recovery
+${hasRelevantContext ? '- Reference the verified sources naturally in your response (e.g., "According to clinical guidelines..." or "Research shows...")' : '- Base your advice on established rehabilitation principles and best practices'}
+${hasRelevantContext ? '- Ensure all treatment advice comes from the verified sources provided' : '- Provide clear, evidence-informed guidance based on the treatment plan data'}
+
+Format the response as a single flowing message with clear sections.`;
 
   const result = await model.generateContent(prompt);
   const treatmentPlanMessage = result.response.text();
+  
+  // Build source summary for frontend display
+  const sourceSummary = hasRelevantContext && ragResult.sources
+    ? ragResult.sources
+        ?.map((s, i) => `[${i + 1}] ${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`)
+        .join('\n')
+    : null;
+  
+  const provenanceLabel = hasRelevantContext
+    ? "Based on verified clinical sources from HealthBay's database."
+    : "AI-generated guidance based on established rehabilitation principles.";
   
   // Build enhanced context that includes all the necessary information for follow-up questions
   const enhancedContext = {
@@ -1543,8 +1641,13 @@ The message should feel like a helpful conversation starter about their treatmen
     currentDetails: enhancedContext.currentDetails,
     testResults: testResults,
     analysis: analysis,
+    ragUsed: hasRelevantContext, // True if sources were found, false if using fallback
+    provenance: provenanceLabel,
+    sources: sourceSummary,
     nextAction: "continue_conversation",
-    uiHint: "Show treatment plan message in chat. User can now ask follow-up questions about their injury, treatment, recovery, etc."
+    uiHint: hasRelevantContext 
+      ? "Show treatment plan message with sources in chat. User can now ask follow-up questions about their injury, treatment, recovery, etc."
+      : "Show treatment plan message (AI-generated) in chat. User can now ask follow-up questions about their injury, treatment, recovery, etc."
   };
 }
 
@@ -1597,7 +1700,7 @@ async function handleConfirmInjury(diagnosisId, currentContext, chatHistory) {
   
   // Build RAG context section if available
   const ragContextSection = hasRelevantContext
-    ? `\n\nRelevant evidence-based rehabilitation information from verified sources:\n${ragResult.context}\n\nSources available:\n${ragResult.sources?.map((s, i) => `[Source ${i + 1}] ${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')}`
+    ? `\n\nRelevant evidence-based rehabilitation information from verified sources:\n${ragResult.context}\n\nSources available:\n${ragResult.sources?.map((s, i) => `${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')}`
     : '';
   
   const prompt = `You are HealthBay, an AI rehabilitation assistant. The user has just confirmed they have ${diagnosisName}.
@@ -1666,9 +1769,8 @@ Guidelines:
 - Use bullet points or numbered lists only when it makes the information clearer
 - Total length should be comprehensive but not overwhelming (aim for 8-12 sentences total)
 - Make it feel like a helpful conversation with a knowledgeable friend who cares about their recovery
-${hasRelevantContext ? '- IMPORTANT: When referencing information from the provided sources, cite them using [Source 1], [Source 2], etc. based on the source numbers provided above' : ''}
 ${hasRelevantContext ? '- Prioritize information from the verified sources when available' : ''}
-${hasRelevantContext ? '- If you use information from sources, make sure to cite them appropriately in your response' : ''}
+${hasRelevantContext ? '- Ensure all information is accurate and evidence-based' : ''}
 
 Format the response as a single flowing message with clear sections.`;
 
@@ -1677,7 +1779,7 @@ Format the response as a single flowing message with clear sections.`;
   
   // Build source summary for frontend display
   const sourceSummary = hasRelevantContext && ragResult.sources
-    ? ragResult.sources.map((s, i) => `[${i + 1}] ${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')
+    ? ragResult.sources.map((s, i) => `${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')
     : null;
   
   const provenanceLabel = hasRelevantContext
@@ -1796,6 +1898,24 @@ async function handleTreatmentChatFollowUp(message, currentContext, chatHistory)
   const analysis = currentContext.analysis || {};
   const refinedTreatmentPlan = currentContext.refinedTreatmentPlan || {};
   
+  // Query RAG for user's specific question
+  let ragResult = null;
+  try {
+    const ragQuery = `${diagnosisName} ${message}`;
+    ragResult = await queryRAG(ragQuery, {
+      injuryId: currentContext?.injury_id || null,
+      bodyPartId: currentContext?.body_part_id || mapBodyPartToId(details.body_part)
+    });
+  } catch (err) {
+    console.warn("⚠️ RAG service unavailable for treatment follow-up:", err.message);
+    ragResult = null;
+  }
+  
+  const hasRelevantContext = !!ragResult?.ragUsed && !!ragResult?.context?.trim();
+  const coverageScore = ragResult?.coverageScore ?? 0;
+  
+  console.log("📚 RAG context for treatment follow-up:", hasRelevantContext, "Coverage:", coverageScore.toFixed(2));
+  
   // Build comprehensive context for the LLM
   const testResultsString = testResults.length > 0
     ? testResults.map(r => `${r.testName}: ${r.result}${r.painLevel ? ` (Pain: ${r.painLevel}/10)` : ''}`).join('\n')
@@ -1807,6 +1927,11 @@ Week 1: ${refinedTreatmentPlan.week1?.join(', ') || 'Continuing care'}
 Weeks 2-3: ${refinedTreatmentPlan.week2_3?.join(', ') || 'Progressive rehabilitation'}
 Ongoing: ${refinedTreatmentPlan.ongoing?.join(', ') || 'Long-term care'}
 ${refinedTreatmentPlan.requiresProfessional?.length > 0 ? `Professional Care Needed: ${refinedTreatmentPlan.requiresProfessional.join(', ')}` : ''}`;
+  
+  // Build RAG context section if available
+  const ragContextSection = hasRelevantContext
+    ? `\n\nEvidence-based rehabilitation information from verified sources:\n${ragResult.context}\n\nSources available:\n${ragResult.sources?.map((s, i) => `${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')}`
+    : '';
   
   const prompt = `You are HealthBay, an AI rehabilitation assistant. The user is in an ongoing conversation about their treatment plan for ${diagnosisName}.
 
@@ -1827,21 +1952,32 @@ Analysis:
 - Confidence: ${analysis.confidenceLevel || 'moderate'}
 - Assessment: ${analysis.assessment || 'Tests completed'}
 - Recovery Timeline: ${analysis.estimatedRecovery || '4-6 weeks'}
+${ragContextSection}
 
 The user just asked: "${message}"
 
 Provide a helpful, conversational response that:
-1. Answers their question directly and accurately
+1. Answers their question directly and accurately ${hasRelevantContext ? 'using PRIMARILY the evidence-based sources provided above' : ''}
 2. References the treatment plan, test results, or diagnosis when relevant
 3. Uses a warm, supportive, and conversational tone
 4. Is concise and focused on their specific question
 5. Encourages further questions if appropriate
-6. If they ask about something not in the treatment plan, provide helpful guidance based on the diagnosis and context
+6. If they ask about something ${hasRelevantContext ? 'not in the sources' : 'not in the treatment plan'}, provide helpful guidance based on the diagnosis and context
+${hasRelevantContext ? '7. CRITICAL: Prioritize information from the verified sources. Only use treatment plan data to supplement if sources don\'t fully answer the question.' : ''}
 
 Be conversational and natural - match their communication style. If they're brief, be brief. Only elaborate when asked.`;
 
   const result = await model.generateContent(prompt);
   const aiResponse = result.response.text();
+  
+  // Build source summary for frontend display
+  const sourceSummary = hasRelevantContext && ragResult.sources
+    ? ragResult.sources.map((s, i) => `${s.title}${s.source_url ? ` - ${s.source_url}` : ''}`).join('\n')
+    : null;
+  
+  const provenanceLabel = hasRelevantContext
+    ? "Based on verified clinical sources from HealthBay's database."
+    : "⚠️ AI-generated (no source match).";
   
   return {
     stage: "TREATMENT_CHAT",
@@ -1851,6 +1987,9 @@ Be conversational and natural - match their communication style. If they're brie
     diagnosisName: diagnosisName,
     currentContext: currentContext,
     currentDetails: details,
+    ragUsed: hasRelevantContext,
+    provenance: provenanceLabel,
+    sources: sourceSummary,
     nextAction: "continue_conversation",
     uiHint: "Show response in chat. User can continue asking questions about their injury, treatment, recovery, etc."
   };
